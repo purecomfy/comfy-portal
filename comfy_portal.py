@@ -67,7 +67,7 @@ INTERNET_CHECK_TIMEOUT = 0.8
 INTERNET_CACHE_TTL = 45.0
 SETUP_STATUS_CACHE_TTL = 120.0
 DOWNLOAD_LINK_CACHE_TTL = 300.0
-DOWNLOAD_LINK_TIMEOUT = 5.0
+DOWNLOAD_LINK_TIMEOUT = 12.0
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_PROGRESS_INTERVAL = 1.0
 DEFAULT_TUNNEL_RETRY_DELAY = 5.0
@@ -1487,6 +1487,7 @@ def check_direct_download_url(url: str) -> tuple[bool, str]:
         attempts.append(("GET", {**headers, "Range": "bytes=0-0"}))
 
     last_status: int | None = None
+    transient_failure = False
     for method, request_headers in attempts:
         try:
             request = urllib.request.Request(url, headers=request_headers, method=method)
@@ -1502,10 +1503,21 @@ def check_direct_download_url(url: str) -> tuple[bool, str]:
             if status_code == 405 and method == "HEAD":
                 continue
             return False, f"Сейчас скачать нельзя: сервер отвечает {status_code}."
-        except Exception:
+        except urllib.error.URLError as exc:
+            reason_text = str(getattr(exc, "reason", exc) or exc).lower()
+            if any(token in reason_text for token in ("timed out", "timeout", "handshake", "temporary")):
+                transient_failure = True
+                continue
+            continue
+        except Exception as exc:
+            reason_text = str(exc or "").lower()
+            if any(token in reason_text for token in ("timed out", "timeout", "handshake", "temporary")):
+                transient_failure = True
             continue
     if last_status is not None:
         return False, f"Сейчас скачать нельзя: сервер отвечает {last_status}."
+    if transient_failure:
+        return True, "Проверка ссылки долго отвечает. Попробуем скачать при установке."
     return False, "Сейчас скачать нельзя: ссылка временно недоступна."
 
 
@@ -1516,7 +1528,8 @@ def cached_direct_download_status(spec: dict, force: bool = False) -> dict[str, 
     cache_items = DOWNLOAD_LINK_STATUS_CACHE["items"]
     cache_key = f"{spec.get('title', '')}|{url}"
     cached = cache_items.get(cache_key)
-    if cached and not force:
+    now = time.monotonic()
+    if cached and not force and (now - float(cached.get("at", 0.0))) < DOWNLOAD_LINK_CACHE_TTL:
         return {
             "available": bool(cached.get("available")),
             "message": str(cached.get("message", "") or ""),
