@@ -325,6 +325,25 @@ SINGLE_INSTANCE_MUTEX = None
 KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
 
 
+def resolve_asset_path(filename: str) -> Path:
+    candidates = [
+        get_resource_path("assets", filename),
+        get_base_dir() / "assets" / filename,
+        BASE_DIR / "assets" / filename,
+        get_resource_path(filename),
+        get_base_dir() / filename,
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 def default_config() -> dict:
     return {
         "port": 8188,
@@ -2863,8 +2882,9 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         retry_delay = float(entry.get("retry_delay", DEFAULT_TUNNEL_RETRY_DELAY) or DEFAULT_TUNNEL_RETRY_DELAY)
         retry_in = max(0, int(retry_after - now))
 
+        created_age = now - float(entry.get("created_at", now) or now)
         if running_pid:
-            status = "active" if detected_url else "starting"
+            status = "active" if (detected_url or entry.get("status") == "active" or created_age >= 10.0) else "starting"
             paused = False
             friend_running = True
             if status == "active":
@@ -4758,9 +4778,9 @@ class MainWindow(QWidget):
         self.setWindowTitle(APP_NAME)
         self.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT)
         self.setMinimumSize(1060, 700)
-        icon_path = get_resource_path("assets", "comfy_portal.ico")
+        icon_path = resolve_asset_path("comfy_portal.ico")
         if not icon_path.exists():
-            icon_path = get_resource_path("assets", "comfy_portal_icon.png")
+            icon_path = resolve_asset_path("comfy_portal_icon.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -5073,7 +5093,7 @@ class MainWindow(QWidget):
         self.logs_viewer = QPlainTextEdit()
         self.logs_viewer.setObjectName("logsViewer")
         self.logs_viewer.setReadOnly(True)
-        self.logs_viewer.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.logs_viewer.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.logs_viewer.setPlaceholderText("Логи ComfyUI появятся здесь после запуска.")
         logs_card_layout.addWidget(self.logs_viewer, 1)
 
@@ -5835,8 +5855,8 @@ class MainWindow(QWidget):
         delete_icon = build_icon_pixmap("close", "#ffffff", 16)
         install_status = setup_status_snapshot() or {"comfy_ready": True, "manager_ready": True, "models": [], "nodes": []}
         install_icon_color = "#ffffff" if (self.install_setup_inflight or comfy_setup_has_missing(install_status)) else self.theme.text
-        telegram_asset = get_resource_path("assets", "telegram_brand.png")
-        settings_asset = get_resource_path("assets", "settings_brand.png")
+        telegram_asset = resolve_asset_path("telegram_brand.png")
+        settings_asset = resolve_asset_path("settings_brand.png")
         if settings_asset.exists():
             self.settings_button.setIcon(QIcon(str(settings_asset)))
         else:
@@ -7162,9 +7182,9 @@ def main() -> None:
         app_font = QFont("Segoe UI", 10)
         app_font.setStyleStrategy(QFont.PreferAntialias)
     app.setFont(app_font)
-    icon_path = get_resource_path("assets", "comfy_portal.ico")
+    icon_path = resolve_asset_path("comfy_portal.ico")
     if not icon_path.exists():
-        icon_path = get_resource_path("assets", "comfy_portal_icon.png")
+        icon_path = resolve_asset_path("comfy_portal_icon.png")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow(autorun_mode="--autorun" in sys.argv[1:])
