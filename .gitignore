@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+cxfreeze_dist/
+nuitka_dist/
+*.egg-info/
+.venv/
+venv/
+
+# local runtime data
+ComfyPortal.config.json
+ComfyPortal.state.json
+
+# logs
+*.log
+
+# local archives
+ComfyPortal.custom_comfy.7z
+ComfyPortal.custom_comfy_url.txt
+
+# editor/system
+.DS_Store
+Thumbs.db
