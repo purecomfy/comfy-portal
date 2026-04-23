@@ -60,13 +60,13 @@ DEFAULT_WIDTH = 1220
 DEFAULT_HEIGHT = 780
 DRAWER_WIDTH = 340
 FRIENDS_DRAWER_WIDTH = 438
-POLL_MS = 5200
-PROCESS_SCAN_TTL = 30.0
+POLL_MS = 6200
+PROCESS_SCAN_TTL = 45.0
 PORT_CHECK_TIMEOUT = 0.02
 INTERNET_CHECK_TIMEOUT = 0.8
 COMFY_HTTP_TIMEOUT = 0.8
 INTERNET_CACHE_TTL = 45.0
-SETUP_STATUS_CACHE_TTL = 120.0
+SETUP_STATUS_CACHE_TTL = 180.0
 DOWNLOAD_LINK_CACHE_TTL = 300.0
 DOWNLOAD_LINK_TIMEOUT = 12.0
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
@@ -74,6 +74,9 @@ DOWNLOAD_PROGRESS_INTERVAL = 1.0
 DEFAULT_TUNNEL_RETRY_DELAY = 5.0
 MAX_TUNNEL_RETRY_DELAY = 45.0
 MAX_FRIEND_LINKS = 5
+DISCOVER_COMFY_CACHE_TTL = 90.0
+DISCOVER_COMFY_BUDGET_SECONDS = 2.8
+DISCOVER_COMFY_DEEP_BUDGET_SECONDS = 4.5
 OVERLAY_ANIMATION_MS = 180
 PANEL_SLIDE_OFFSET = 6
 BACKDROP_FADE_MS = 220
@@ -171,16 +174,22 @@ STARTER_MODEL_SPECS = (
         "relative_dir": ("ComfyUI", "models", "upscale_models"),
     },
     {
-        "title": "Extra Checkpoint 2159501",
-        "filename": "model_2159501_pruned_fp16.safetensors",
+        "title": "mopMixtureOfPerverts_v20.safetensors",
+        "filename": "mopMixtureOfPerverts_v20.safetensors",
         "url": "https://civitai.red/api/download/models/2159501?type=Model&format=SafeTensor&size=pruned&fp=fp16",
         "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "detect_names": ("mopMixtureOfPerverts_v20.safetensors",),
+        "detect_contains_any": ("mopmixtureofperverts", "mixtureofperverts", "2159501"),
+        "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "Extra Checkpoint 1624818",
-        "filename": "model_1624818_full_fp16.safetensors",
+        "title": "xxxRay_dmd2.safetensors",
+        "filename": "xxxRay_dmd2.safetensors",
         "url": "https://civitai.red/api/download/models/1624818?type=Model&format=SafeTensor&size=full&fp=fp16",
         "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "detect_names": ("xxxRay_dmd2.safetensors",),
+        "detect_contains_any": ("xxxray", "ray_dmd2", "dmd2", "1624818"),
+        "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
         "title": "bbox/face_yolov8m.pt",
@@ -330,6 +339,7 @@ FRIEND_PROCESS_MAP_CACHE = {"at": 0.0, "mapping": {}}
 INTERNET_STATUS_CACHE = {"at": 0.0, "ok": True}
 SETUP_STATUS_CACHE = {"at": 0.0, "key": "", "status": None}
 DOWNLOAD_LINK_STATUS_CACHE = {"items": {}}
+DISCOVER_COMFY_CACHE = {"at": 0.0, "path": None, "anchor": ""}
 COMFY_LAUNCH_LOCK = threading.Lock()
 NETWORK_ERROR_HINTS = (
     "connection reset",
@@ -385,7 +395,6 @@ def default_config() -> dict:
         "launch_mode_confirmed": False,
         "auto_copy_url": True,
         "auto_restart_tunnel": True,
-        "smooth_animations": True,
         "start_on_boot": False,
         "comfy_root": "",
     }
@@ -445,11 +454,15 @@ def load_config() -> dict:
     config.update(read_json(CONFIG_PATH, {}))
     config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
+    config.pop("smooth_animations", None)
     config.pop("civitai_api_key", None)
     return config
 
 
 def save_config(config: dict) -> None:
+    config = dict(config)
+    config.pop("smooth_animations", None)
+    config.pop("civitai_api_key", None)
     write_json(CONFIG_PATH, config)
     invalidate_setup_status_cache()
 
@@ -1019,9 +1032,31 @@ def iter_probe_dirs(root: Path) -> list[Path]:
 
 
 def discover_comfy_root() -> Path | None:
+    now = time.monotonic()
+    cache_path = DISCOVER_COMFY_CACHE.get("path")
+    cache_anchor = str(DISCOVER_COMFY_CACHE.get("anchor", "") or "")
+    if (
+        cache_anchor == "global"
+        and now - float(DISCOVER_COMFY_CACHE.get("at", 0.0) or 0.0) < DISCOVER_COMFY_CACHE_TTL
+    ):
+        if cache_path:
+            try:
+                cached_root = Path(str(cache_path))
+                if is_comfy_root(cached_root):
+                    return cached_root.resolve()
+            except Exception:
+                pass
+        else:
+            return None
+
     seen: set[str] = set()
+    deadline = now + DISCOVER_COMFY_BUDGET_SECONDS
     for root in iter_search_locations():
+        if time.monotonic() >= deadline:
+            break
         for probe in iter_probe_dirs(root):
+            if time.monotonic() >= deadline:
+                break
             try:
                 probe_key = str(probe.resolve()).lower()
             except Exception:
@@ -1030,7 +1065,10 @@ def discover_comfy_root() -> Path | None:
                 continue
             seen.add(probe_key)
             if is_comfy_root(probe):
-                return probe.resolve()
+                resolved = probe.resolve()
+                DISCOVER_COMFY_CACHE.update({"at": time.monotonic(), "path": str(resolved), "anchor": "global"})
+                return resolved
+    DISCOVER_COMFY_CACHE.update({"at": time.monotonic(), "path": None, "anchor": "global"})
     return None
 
 
@@ -1072,8 +1110,28 @@ def current_comfy_root(config: dict | None = None) -> Path | None:
 def discover_comfy_root_in(base_dir: Path) -> Path | None:
     if not base_dir.exists():
         return None
+    try:
+        cache_anchor = str(base_dir.resolve()).lower()
+    except Exception:
+        cache_anchor = str(base_dir).lower()
+    now = time.monotonic()
+    if (
+        DISCOVER_COMFY_CACHE.get("anchor") == cache_anchor
+        and now - float(DISCOVER_COMFY_CACHE.get("at", 0.0) or 0.0) < DISCOVER_COMFY_CACHE_TTL
+    ):
+        cache_path = DISCOVER_COMFY_CACHE.get("path")
+        if cache_path:
+            try:
+                cached_root = Path(str(cache_path))
+                if is_comfy_root(cached_root):
+                    return cached_root.resolve()
+            except Exception:
+                pass
     seen: set[str] = set()
+    deadline = now + DISCOVER_COMFY_DEEP_BUDGET_SECONDS
     for probe in iter_probe_dirs(base_dir):
+        if time.monotonic() >= deadline:
+            break
         try:
             probe_key = str(probe.resolve()).lower()
         except Exception:
@@ -1082,7 +1140,10 @@ def discover_comfy_root_in(base_dir: Path) -> Path | None:
             continue
         seen.add(probe_key)
         if is_comfy_root(probe):
-            return probe.resolve()
+            resolved = probe.resolve()
+            DISCOVER_COMFY_CACHE.update({"at": time.monotonic(), "path": str(resolved), "anchor": cache_anchor})
+            return resolved
+    DISCOVER_COMFY_CACHE.update({"at": time.monotonic(), "path": None, "anchor": cache_anchor})
     return None
 
 
@@ -1110,6 +1171,39 @@ def starter_model_directory_files(target_dir: Path) -> list[Path]:
         return [item for item in target_dir.iterdir() if is_nonempty_file(item)]
     except Exception:
         return []
+
+
+def starter_model_presence_stamp(root: Path | None, spec: dict) -> str:
+    if not root:
+        return "no-root"
+    target_dir = starter_model_target_dir(root, spec)
+    target_path = starter_model_target_path(root, spec)
+    if is_nonempty_file(target_path):
+        try:
+            stat = target_path.stat()
+            return f"target:{target_path.name}:{stat.st_mtime_ns}:{stat.st_size}"
+        except Exception:
+            return f"target:{target_path.name}:x"
+
+    files = starter_model_directory_files(target_dir)
+    if not files:
+        return f"{target_dir.name}:0"
+
+    markers: list[str] = []
+    for file_path in sorted(files, key=lambda item: item.name.lower()):
+        lower_name = file_path.name.lower()
+        tracked_name = lower_name == str(spec.get("filename", "")).strip().lower()
+        tracked_name = tracked_name or lower_name in {str(name).strip().lower() for name in spec.get("detect_names", ()) if str(name).strip()}
+        tokens = [str(value).strip().lower() for value in spec.get("detect_contains_any", ()) if str(value).strip()]
+        tracked_name = tracked_name or any(token in lower_name for token in tokens)
+        if not tracked_name and not spec.get("detect_any_file"):
+            continue
+        try:
+            stat = file_path.stat()
+            markers.append(f"{file_path.name}:{stat.st_mtime_ns}:{stat.st_size}")
+        except Exception:
+            markers.append(f"{file_path.name}:x")
+    return "|".join(markers) if markers else f"{target_dir.name}:present"
 
 
 def starter_model_exists(root: Path | None, spec: dict) -> bool:
@@ -1235,12 +1329,9 @@ def setup_presence_stamp(root: str) -> str:
     if not normalized_root:
         return "no-root"
     root_path = Path(normalized_root)
-    candidates = [
-        root_path / "ComfyUI" / "custom_nodes" / "comfyui-manager",
-        *(root_path.joinpath(*spec["relative_dir"], spec["filename"]) for spec in STARTER_MODEL_SPECS),
-        *(node_install_path(root_path, spec) for spec in REQUIRED_NODE_SPECS),
-    ]
     parts: list[str] = []
+    manager_path = root_path / "ComfyUI" / "custom_nodes" / "comfyui-manager"
+    candidates = [manager_path, *(node_install_path(root_path, spec) for spec in REQUIRED_NODE_SPECS)]
     for path in candidates:
         try:
             exists = path.exists()
@@ -1251,6 +1342,8 @@ def setup_presence_stamp(root: str) -> str:
                 parts.append(f"{path.name}:0")
         except Exception:
             parts.append(f"{path.name}:x")
+    for spec in STARTER_MODEL_SPECS:
+        parts.append(f"{spec['title']}:{starter_model_presence_stamp(root_path, spec)}")
     workflow_stamp = workflow_files_stamp()
     if workflow_stamp:
         parts.append(f"wf:{workflow_stamp}")
@@ -1531,7 +1624,7 @@ def check_direct_download_url(url: str) -> tuple[bool, str]:
 
     opener = urllib.request.build_opener(NoRedirect)
     attempts: list[tuple[str, dict[str, str]]] = []
-    if "civitai.com" in host:
+    if "civitai.com" in host or "civitai.red" in host:
         attempts.append(("GET", {**headers, "Range": "bytes=0-0"}))
     else:
         attempts.append(("HEAD", headers))
@@ -2537,6 +2630,8 @@ def launch_localtunnel(comfy_root: Path, port: int, subdomain: str, out_path: Pa
         "localtunnel",
         "--port",
         str(int(port)),
+        "--local-host",
+        "127.0.0.1",
         "--subdomain",
         normalize_subdomain(subdomain),
     ]
@@ -5338,16 +5433,13 @@ class MainWindow(QWidget):
 
         self.auto_copy_row = ToggleRow("Auto-copy main link", "Когда основной туннель готов, ссылка сама улетает в буфер обмена.")
         self.auto_restart_row = ToggleRow("Auto-restart tunnel", "Если главный туннель падает, приложение поднимает его заново без ручного клика.")
-        self.animations_row = ToggleRow("Smooth animations", "Мягкое открытие панелей и более плавное движение интерфейса.")
         self.start_on_boot_row = ToggleRow("Start with Windows", "После входа в Windows приложение само откроется и поднимет ComfyUI с основным портом.")
         self.auto_copy_toggle = self.auto_copy_row.toggle
         self.auto_restart_toggle = self.auto_restart_row.toggle
-        self.animations_toggle = self.animations_row.toggle
         self.start_on_boot_toggle = self.start_on_boot_row.toggle
         for toggle in (
             self.auto_copy_toggle,
             self.auto_restart_toggle,
-            self.animations_toggle,
             self.start_on_boot_toggle,
         ):
             toggle.toggled.connect(self.mark_settings_dirty)
@@ -5370,7 +5462,6 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.theme_segment)
         drawer_layout.addWidget(self.auto_copy_row)
         drawer_layout.addWidget(self.auto_restart_row)
-        drawer_layout.addWidget(self.animations_row)
         drawer_layout.addWidget(self.start_on_boot_row)
         drawer_layout.addWidget(self.save_settings_button)
         drawer_layout.addItem(QSpacerItem(0, 8, QSizePolicy.Minimum, QSizePolicy.Expanding))
@@ -6097,14 +6188,12 @@ class MainWindow(QWidget):
                     self.auto_copy_toggle.setChecked(self.config.get("auto_copy_url", True))
                 if self.auto_restart_toggle.isChecked() != self.config.get("auto_restart_tunnel", True):
                     self.auto_restart_toggle.setChecked(self.config.get("auto_restart_tunnel", True))
-                if self.animations_toggle.isChecked() != self.config.get("smooth_animations", True):
-                    self.animations_toggle.setChecked(self.config.get("smooth_animations", True))
                 if self.start_on_boot_toggle.isChecked() != self.config.get("start_on_boot", False):
                     self.start_on_boot_toggle.setChecked(self.config.get("start_on_boot", False))
         finally:
             self.syncing_controls = False
 
-        for toggle_row in (self.auto_copy_row, self.auto_restart_row, self.animations_row, self.start_on_boot_row):
+        for toggle_row in (self.auto_copy_row, self.auto_restart_row, self.start_on_boot_row):
             toggle_row.apply_theme(self.theme)
         self.update_segment_buttons()
 
@@ -6574,7 +6663,6 @@ class MainWindow(QWidget):
         updated_config["launch_mode_confirmed"] = True
         updated_config["auto_copy_url"] = self.auto_copy_toggle.isChecked()
         updated_config["auto_restart_tunnel"] = self.auto_restart_toggle.isChecked()
-        updated_config["smooth_animations"] = self.animations_toggle.isChecked()
         updated_config["start_on_boot"] = self.start_on_boot_toggle.isChecked()
         self.config = updated_config
         save_config(self.config)
@@ -6963,7 +7051,6 @@ class MainWindow(QWidget):
         updated_config["launch_mode_confirmed"] = True
         updated_config["auto_copy_url"] = self.auto_copy_toggle.isChecked()
         updated_config["auto_restart_tunnel"] = self.auto_restart_toggle.isChecked()
-        updated_config["smooth_animations"] = self.animations_toggle.isChecked()
         updated_config["start_on_boot"] = self.start_on_boot_toggle.isChecked()
         self.config = updated_config
         save_config(self.config)
