@@ -64,6 +64,7 @@ POLL_MS = 5200
 PROCESS_SCAN_TTL = 30.0
 PORT_CHECK_TIMEOUT = 0.02
 INTERNET_CHECK_TIMEOUT = 0.8
+COMFY_HTTP_TIMEOUT = 0.8
 INTERNET_CACHE_TTL = 45.0
 SETUP_STATUS_CACHE_TTL = 120.0
 DOWNLOAD_LINK_CACHE_TTL = 300.0
@@ -95,19 +96,19 @@ DEFAULT_LAUNCH_MODE = "fp16"
 COMFY_LAUNCH_MODES = {
     "fp16": {
         "title": "FP16",
-        "args": ["--windows-standalone-build", "--fp16-unet", "--fp16-vae", "--fp16-text-enc"],
+        "args": ["--windows-standalone-build", "--listen", "--fp16-unet", "--fp16-vae", "--fp16-text-enc"],
     },
     "fp8": {
         "title": "FP8",
-        "args": ["--windows-standalone-build", "--fp8_e4m3fn-unet", "--fp8_e4m3fn-text-enc", "--fp16-vae"],
+        "args": ["--windows-standalone-build", "--listen", "--fp8_e4m3fn-unet", "--fp8_e4m3fn-text-enc", "--fp16-vae"],
     },
     "bf16": {
         "title": "BF16",
-        "args": ["--windows-standalone-build", "--bf16-unet", "--bf16-vae", "--bf16-text-enc"],
+        "args": ["--windows-standalone-build", "--listen", "--bf16-unet", "--bf16-vae", "--bf16-text-enc"],
     },
     "cpu": {
         "title": "CPU",
-        "args": ["--windows-standalone-build", "--cpu"],
+        "args": ["--windows-standalone-build", "--listen", "--cpu"],
     },
 }
 STARTER_MODEL_SPECS = (
@@ -168,6 +169,30 @@ STARTER_MODEL_SPECS = (
         "filename": "4x_NMKD-Siax_200k.pth",
         "url": "https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth?download=true",
         "relative_dir": ("ComfyUI", "models", "upscale_models"),
+    },
+    {
+        "title": "Extra Checkpoint 2159501",
+        "filename": "model_2159501_pruned_fp16.safetensors",
+        "url": "https://civitai.red/api/download/models/2159501?type=Model&format=SafeTensor&size=pruned&fp=fp16",
+        "relative_dir": ("ComfyUI", "models", "checkpoints"),
+    },
+    {
+        "title": "Extra Checkpoint 1624818",
+        "filename": "model_1624818_full_fp16.safetensors",
+        "url": "https://civitai.red/api/download/models/1624818?type=Model&format=SafeTensor&size=full&fp=fp16",
+        "relative_dir": ("ComfyUI", "models", "checkpoints"),
+    },
+    {
+        "title": "bbox/face_yolov8m.pt",
+        "filename": "face_yolov8m.pt",
+        "url": "https://huggingface.co/alexgenovese/ultralytics/resolve/main/bbox/face_yolov8m.pt?download=true",
+        "relative_dir": ("ComfyUI", "models", "ultralytics", "bbox"),
+    },
+    {
+        "title": "bbox/Eyeful_v2-Paired.pt",
+        "filename": "Eyeful_v2-Paired.pt",
+        "url": "https://huggingface.co/MidnightRunner/Ultralytics/resolve/main/bbox/Eyeful_v2-Paired.pt?download=true",
+        "relative_dir": ("ComfyUI", "models", "ultralytics", "bbox"),
     },
 )
 REQUIRED_NODE_SPECS = (
@@ -247,6 +272,13 @@ REQUIRED_NODE_SPECS = (
         "folder": "ComfyUI-Chibi-Nodes",
         "repo": "https://github.com/chibiace/ComfyUI-Chibi-Nodes.git",
         "aliases": ["ComfyUI-Chibi-Nodes", "ComfyUI Chibi Nodes"],
+    },
+    {
+        "title": "ComfyUI_essentials",
+        "cnr_id": "comfyui_essentials",
+        "folder": "ComfyUI_essentials",
+        "repo": "https://github.com/cubiq/ComfyUI_essentials.git",
+        "aliases": ["ComfyUI_essentials", "ComfyUI essentials", "essentials"],
     },
 )
 WORKFLOW_CANDIDATE_NAMES = (
@@ -2206,6 +2238,34 @@ def port_is_open(port: int) -> bool:
         sock.close()
 
 
+def comfy_http_ready(port: int, timeout_seconds: float = COMFY_HTTP_TIMEOUT) -> bool:
+    headers = {"User-Agent": DOWNLOAD_USER_AGENT}
+    probes = (
+        (f"http://127.0.0.1:{int(port)}/system_stats", ("devices", "system")),
+        (f"http://127.0.0.1:{int(port)}/", ("comfy", "<!doctype html", "<html")),
+    )
+    for url, markers in probes:
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                body = response.read(512).decode("utf-8", errors="ignore").lower()
+                if 200 <= status < 500 and any(marker in body for marker in markers):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def wait_for_comfy_ready(port: int, timeout_seconds: float = 90.0, interval_seconds: float = 0.6) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if port_is_open(port) and comfy_http_ready(port):
+            return True
+        time.sleep(interval_seconds)
+    return port_is_open(port) and comfy_http_ready(port)
+
+
 def internet_is_available(force: bool = False) -> bool:
     now = time.monotonic()
     cache = INTERNET_STATUS_CACHE
@@ -2544,8 +2604,13 @@ def start_comfy_if_needed() -> str:
         config = load_config()
         comfy_root = ensure_layout(config)
         state = load_state()
-        if port_is_open(config["port"]) or any_comfy_process(state):
+        port_open = port_is_open(config["port"])
+        comfy_ready = comfy_http_ready(config["port"]) if port_open else False
+        comfy_proc = any_comfy_process(state)
+        if comfy_ready or comfy_proc:
             return "ComfyUI уже активен."
+        if port_open and not comfy_ready:
+            raise RuntimeError(f"Порт {config['port']} уже занят другим приложением.")
 
         clear_logs(COMFY_OUT, COMFY_ERR)
         out = open(COMFY_OUT, "w", encoding="utf-8")
@@ -2572,8 +2637,8 @@ def start_tunnel_if_needed() -> str:
         config = load_config()
         comfy_root = ensure_layout(config)
         state = load_state()
-        if not port_is_open(config["port"]):
-            raise RuntimeError("ComfyUI еще не поднял порт 8188.")
+        if not wait_for_comfy_ready(config["port"], timeout_seconds=30.0, interval_seconds=0.5):
+            raise RuntimeError("ComfyUI еще не отвечает по HTTP и не готов для туннеля.")
         if any_tunnel_process(state):
             return "Туннель уже активен."
 
@@ -2597,8 +2662,8 @@ def start_friend_tunnel(link_id: str) -> str:
 
     if not port_is_open(config["port"]):
         start_comfy_if_needed()
-        if not wait_for_port(config["port"]):
-            raise RuntimeError("ComfyUI не открыл порт вовремя.")
+        if not wait_for_comfy_ready(config["port"]):
+            raise RuntimeError("ComfyUI не ответил вовремя.")
 
     out_path, err_path = friend_log_paths(entry["id"])
     proc = launch_localtunnel(comfy_root, config["port"], entry["subdomain"], out_path, err_path)
@@ -2704,8 +2769,8 @@ def start_all() -> str:
     )
     reset_tunnel_retry()
     comfy_msg = start_comfy_if_needed()
-    if not wait_for_port(config["port"]):
-        raise RuntimeError("ComfyUI не открыл порт вовремя.")
+    if not wait_for_comfy_ready(config["port"]):
+        raise RuntimeError("ComfyUI не ответил вовремя.")
     tunnel_msg = start_tunnel_if_needed()
     return f"{comfy_msg} {tunnel_msg}"
 
@@ -2827,8 +2892,8 @@ def regenerate_main_tunnel() -> str:
     stop_main_tunnel_only()
     if not port_is_open(config["port"]):
         start_comfy_if_needed()
-        if not wait_for_port(config["port"]):
-            raise RuntimeError("ComfyUI не открыл порт вовремя.")
+        if not wait_for_comfy_ready(config["port"]):
+            raise RuntimeError("ComfyUI не ответил вовремя.")
     start_tunnel_if_needed()
     return f"Ссылка обновляется для {normalize_subdomain(config['subdomain'])}."
 
@@ -2839,6 +2904,8 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
     comfy_root = normalize_root_path(config.get("comfy_root", ""))
     internet_ok = internet_is_available()
     comfy_active = any_comfy_process(state)
+    if not comfy_active and port_is_open(config["port"]):
+        comfy_active = comfy_http_ready(config["port"])
     tunnel_active = any_tunnel_process(state)
     main_subdomain = normalize_subdomain(config.get("subdomain", ""))
     expected_main_url = friend_url_for_subdomain(main_subdomain)
