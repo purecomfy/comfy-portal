@@ -97,8 +97,8 @@ build_exe_options = {
         (str(ASSETS / "comfy_portal_icon.png"), "assets/comfy_portal_icon.png"),
         (str(ASSETS / "telegram_brand.png"), "assets/telegram_brand.png"),
         (str(ASSETS / "settings_brand.png"), "assets/settings_brand.png"),
-        (str(ASSETS / "telegram_button_icon.png"), "assets/telegram_button_icon.png"),
-        (str(ASSETS / "telegram_button_round.png"), "assets/telegram_button_round.png"),
+        (str(ASSETS / "github_brand_light.png"), "assets/github_brand_light.png"),
+        (str(ASSETS / "github_brand_dark.png"), "assets/github_brand_dark.png"),
     ],
     "include_msvcr": False,
     "optimize": 0,
@@ -117,7 +117,7 @@ executables = [
 
 setup(
     name="Comfy Portal",
-    version="1.0.5",
+    version="1.0.6",
     description="ComfyUI launcher and tunnel manager",
     options={"build_exe": build_exe_options},
     executables=executables,

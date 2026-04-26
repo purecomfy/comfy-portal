@@ -16,6 +16,8 @@ a = Analysis(
         (str(ASSETS / "comfy_portal_icon.png"), "assets"),
         (str(ASSETS / "telegram_brand.png"), "assets"),
         (str(ASSETS / "settings_brand.png"), "assets"),
+        (str(ASSETS / "github_brand_light.png"), "assets"),
+        (str(ASSETS / "github_brand_dark.png"), "assets"),
     ],
     hiddenimports=[],
     hookspath=[],

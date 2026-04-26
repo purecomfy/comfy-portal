@@ -53,9 +53,15 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
+APP_VERSION = "1.0.6"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
+GITHUB_REPO_URL = "https://github.com/purecomfy/comfy-portal"
+GITHUB_RELEASES_URL = f"{GITHUB_REPO_URL}/releases"
+GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/purecomfy/comfy-portal/releases/latest"
+GITHUB_PORTABLE_ASSET_NAME = "Comfy.Portal.Portable.Release.zip"
+GITHUB_ONEFILE_ASSET_NAME = "Comfy Portal.exe"
 DEFAULT_WIDTH = 1220
 DEFAULT_HEIGHT = 780
 DRAWER_WIDTH = 340
@@ -79,12 +85,16 @@ DISCOVER_COMFY_BUDGET_SECONDS = 2.8
 DISCOVER_COMFY_DEEP_BUDGET_SECONDS = 4.5
 LOG_VIEW_POLL_MS = 1100
 PUBLIC_TUNNEL_CACHE_TTL = 18.0
+UPDATE_CHECK_CACHE_TTL = 900.0
 OVERLAY_ANIMATION_MS = 180
 PANEL_SLIDE_OFFSET = 6
 BACKDROP_FADE_MS = 220
 PAGE_FADE_MS = 170
 TELEGRAM_CHANNEL_URL = "https://t.me/ComfyUIGuide"
 TELEGRAM_BRAND_SIZE = 38
+GITHUB_BRAND_SIZE = 38
+ONBOARDING_MIN_SUBDOMAIN_LEN = 6
+ONBOARDING_STORAGE_HEADROOM_BYTES = 1024 * 1024 * 1024
 # Accept legacy 6-digit friend links and new 8-digit ones.
 FRIEND_LINK_PATTERN = re.compile(r"friendscomfy(?:\d{6}|\d{8})")
 SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9-]{3,63}$")
@@ -98,6 +108,24 @@ CUSTOM_COMFY_URL_FILENAME = "ComfyPortal.custom_comfy_url.txt"
 COMFYUI_MANAGER_ARCHIVE_URL = "https://github.com/ltdrdata/ComfyUI-Manager/archive/refs/heads/main.zip"
 DOWNLOAD_USER_AGENT = "ComfyPortal/1.0"
 DEFAULT_LAUNCH_MODE = "fp16"
+MODEL_SIZE_HINTS = {
+    "SAM": 420 * 1024 * 1024,
+    "RealESRGAN x2": 70 * 1024 * 1024,
+    "Control LoRA Canny": 150 * 1024 * 1024,
+    "VAE": 340 * 1024 * 1024,
+    "CLIP / text_encoders": 8 * 1024 * 1024 * 1024,
+    "ControlNet Union": 3 * 1024 * 1024 * 1024,
+    "Embeddings": 80 * 1024 * 1024,
+    "Intorealism UNet": 4 * 1024 * 1024 * 1024,
+    "Upscale 4x_NMKD-Siax_200k": 70 * 1024 * 1024,
+    "mopMixtureOfPerverts_v20.safetensors": 2 * 1024 * 1024 * 1024,
+    "xxxRay_dmd2.safetensors": 2 * 1024 * 1024 * 1024,
+    "bbox/face_yolov8m.pt": 60 * 1024 * 1024,
+    "bbox/Eyeful_v2-Paired.pt": 90 * 1024 * 1024,
+}
+NODE_SIZE_HINT_BYTES = 220 * 1024 * 1024
+PORTABLE_SIZE_HINT_BYTES = int(1.9 * 1024 * 1024 * 1024)
+MANAGER_SIZE_HINT_BYTES = 40 * 1024 * 1024
 COMFY_LAUNCH_MODES = {
     "fp16": {
         "title": "FP16",
@@ -350,6 +378,7 @@ SETUP_STATUS_CACHE = {"at": 0.0, "key": "", "status": None}
 DOWNLOAD_LINK_STATUS_CACHE = {"items": {}}
 DISCOVER_COMFY_CACHE = {"at": 0.0, "path": None, "anchor": ""}
 PUBLIC_TUNNEL_STATUS_CACHE = {"items": {}}
+UPDATE_RELEASE_CACHE = {"at": 0.0, "info": None}
 COMFY_LAUNCH_LOCK = threading.Lock()
 NETWORK_ERROR_HINTS = (
     "connection reset",
@@ -403,6 +432,7 @@ def default_config() -> dict:
         "theme": "light",
         "launch_mode": DEFAULT_LAUNCH_MODE,
         "launch_mode_confirmed": False,
+        "onboarding_completed": False,
         "auto_copy_url": True,
         "auto_restart_tunnel": True,
         "start_on_boot": False,
@@ -461,9 +491,14 @@ def acquire_single_instance() -> bool:
 
 def load_config() -> dict:
     config = default_config()
-    config.update(read_json(CONFIG_PATH, {}))
+    existing_raw = read_json(CONFIG_PATH, {})
+    config.update(existing_raw)
     config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
+    if "onboarding_completed" not in existing_raw:
+        config["onboarding_completed"] = bool(config.get("launch_mode_confirmed")) and bool(existing_raw)
+    else:
+        config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
     config.pop("smooth_animations", None)
     config.pop("civitai_api_key", None)
     return config
@@ -473,6 +508,9 @@ def save_config(config: dict) -> None:
     config = dict(config)
     config.pop("smooth_animations", None)
     config.pop("civitai_api_key", None)
+    config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+    config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
+    config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
     write_json(CONFIG_PATH, config)
     invalidate_setup_status_cache()
 
@@ -807,6 +845,108 @@ def normalize_subdomain(value: str) -> str:
     return clean or "comfylocal5618"
 
 
+def is_valid_main_subdomain(value: str) -> bool:
+    clean = sanitize_subdomain(value)
+    return len(clean) >= ONBOARDING_MIN_SUBDOMAIN_LEN and bool(SUBDOMAIN_PATTERN.fullmatch(clean))
+
+
+def parse_version_tuple(value: str) -> tuple[int, ...]:
+    clean = str(value or "").strip().lower().removeprefix("v")
+    parts: list[int] = []
+    for part in re.split(r"[.\-_]+", clean):
+        if part.isdigit():
+            parts.append(int(part))
+        else:
+            digits = "".join(ch for ch in part if ch.isdigit())
+            if digits:
+                parts.append(int(digits))
+    return tuple(parts or [0])
+
+
+def is_version_newer(remote: str, local: str = APP_VERSION) -> bool:
+    return parse_version_tuple(remote) > parse_version_tuple(local)
+
+
+def running_onefile_bundle() -> bool:
+    return bool(getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"))
+
+
+def running_portable_bundle() -> bool:
+    if not getattr(sys, "frozen", False):
+        return False
+    return (BASE_DIR / "lib").exists() or (BASE_DIR / "assets").exists()
+
+
+def free_bytes_for_path(path: Path) -> int:
+    try:
+        target = path if path.exists() else path.parent
+        return int(shutil.disk_usage(target).free)
+    except Exception:
+        return 0
+
+
+def estimate_missing_setup_bytes(status: dict) -> int:
+    total = 0
+    if not status.get("comfy_ready"):
+        total += PORTABLE_SIZE_HINT_BYTES
+    if not status.get("manager_ready"):
+        total += MANAGER_SIZE_HINT_BYTES
+    for model in status.get("models", []):
+        if not model.get("ready"):
+            total += int(MODEL_SIZE_HINTS.get(model.get("title", ""), 250 * 1024 * 1024))
+    for node in status.get("nodes", []):
+        if not node.get("ready"):
+            total += NODE_SIZE_HINT_BYTES
+    return total
+
+
+def has_enough_space_for_setup(status: dict, target_root: Path | None = None) -> tuple[bool, int, int]:
+    missing_bytes = estimate_missing_setup_bytes(status)
+    if missing_bytes <= 0:
+        return True, free_bytes_for_path(target_root or BASE_DIR), 0
+    anchor = target_root or current_comfy_root(load_config()) or BASE_DIR
+    free_bytes = free_bytes_for_path(anchor)
+    needed_bytes = missing_bytes + ONBOARDING_STORAGE_HEADROOM_BYTES
+    return free_bytes >= needed_bytes, free_bytes, needed_bytes
+
+
+def github_headers() -> dict[str, str]:
+    return {
+        "User-Agent": f"ComfyPortal/{APP_VERSION}",
+        "Accept": "application/vnd.github+json",
+    }
+
+
+def github_release_asset_url(release: dict, preferred_name: str) -> str:
+    for asset in release.get("assets", []) or []:
+        if str(asset.get("name", "")) == preferred_name:
+            return str(asset.get("browser_download_url", "") or "")
+    return ""
+
+
+def fetch_latest_release_info(force: bool = False) -> dict[str, object]:
+    cache = UPDATE_RELEASE_CACHE
+    now = time.monotonic()
+    cached = cache.get("info")
+    if cached and not force and (now - float(cache.get("at", 0.0) or 0.0)) < UPDATE_CHECK_CACHE_TTL:
+        return dict(cached)
+    request = urllib.request.Request(GITHUB_LATEST_RELEASE_API, headers=github_headers(), method="GET")
+    with urllib.request.urlopen(request, timeout=DOWNLOAD_LINK_TIMEOUT) as response:
+        data = json.loads(response.read().decode("utf-8", errors="replace"))
+    tag_name = str(data.get("tag_name", "") or "").strip()
+    info = {
+        "tag_name": tag_name,
+        "html_url": str(data.get("html_url", "") or GITHUB_RELEASES_URL),
+        "portable_url": github_release_asset_url(data, GITHUB_PORTABLE_ASSET_NAME),
+        "exe_url": github_release_asset_url(data, GITHUB_ONEFILE_ASSET_NAME),
+        "available": bool(tag_name),
+        "newer": is_version_newer(tag_name, APP_VERSION),
+    }
+    cache["info"] = dict(info)
+    cache["at"] = now
+    return dict(info)
+
+
 def generate_friend_subdomain() -> str:
     return f"friendscomfy{secrets.randbelow(100000000):08d}"
 
@@ -1082,7 +1222,7 @@ def discover_comfy_root() -> Path | None:
     return None
 
 
-def resolve_comfy_root(config: dict | None = None, save_if_found: bool = True) -> Path:
+def resolve_comfy_root(config: dict | None = None, save_if_found: bool = True, allow_discover: bool = True) -> Path:
     config = config or load_config()
     configured_root = normalize_root_path(config.get("comfy_root", ""))
     if configured_root:
@@ -1101,18 +1241,19 @@ def resolve_comfy_root(config: dict | None = None, save_if_found: bool = True) -
                 save_config(config)
             return root
 
-    discovered = discover_comfy_root()
-    if discovered:
-        if save_if_found:
-            config["comfy_root"] = str(discovered)
-            save_config(config)
-        return discovered
+    if allow_discover:
+        discovered = discover_comfy_root()
+        if discovered:
+            if save_if_found:
+                config["comfy_root"] = str(discovered)
+                save_config(config)
+            return discovered
     raise RuntimeError("Не найдена portable-папка ComfyUI. Укажи ее в настройках приложения.")
 
 
 def current_comfy_root(config: dict | None = None) -> Path | None:
     try:
-        return resolve_comfy_root(config, save_if_found=False)
+        return resolve_comfy_root(config, save_if_found=False, allow_discover=False)
     except Exception:
         return None
 
@@ -1794,6 +1935,82 @@ def set_windows_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(str(app_id))
     except Exception:
         pass
+
+
+def ps_quote(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def prepare_release_update(release_info: dict[str, object]) -> str:
+    tag_name = str(release_info.get("tag_name", "") or "").strip() or "latest"
+    temp_dir = DATA_DIR / "updates"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    current_pid = os.getpid()
+
+    if running_portable_bundle():
+        asset_url = str(release_info.get("portable_url", "") or "")
+        if not asset_url:
+            raise RuntimeError("Для portable-обновления не найден zip asset в релизе.")
+        zip_path = temp_dir / f"Comfy.Portal.{tag_name}.zip"
+        download_file(asset_url, zip_path)
+        script_path = temp_dir / "apply_portable_update.ps1"
+        target_dir = BASE_DIR
+        target_exe = target_dir / "Comfy Portal.exe"
+        stage_dir = temp_dir / f"stage_{tag_name}"
+        script_text = f"""
+$ErrorActionPreference = 'Stop'
+$pidToWait = {current_pid}
+$zipPath = {ps_quote(zip_path)}
+$stageDir = {ps_quote(stage_dir)}
+$targetDir = {ps_quote(target_dir)}
+$targetExe = {ps_quote(target_exe)}
+while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 350 }}
+if (Test-Path -LiteralPath $stageDir) {{ Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue }}
+Expand-Archive -LiteralPath $zipPath -DestinationPath $stageDir -Force
+Get-ChildItem -LiteralPath $stageDir | ForEach-Object {{
+    Copy-Item -LiteralPath $_.FullName -Destination $targetDir -Recurse -Force
+}}
+Start-Sleep -Milliseconds 250
+if (Test-Path -LiteralPath $targetExe) {{
+    Start-Process -FilePath $targetExe
+}}
+"""
+    else:
+        asset_url = str(release_info.get("exe_url", "") or "")
+        if not asset_url:
+            raise RuntimeError("Для этой сборки в релизе нет отдельного .exe для автообновления.")
+        exe_path = temp_dir / "Comfy Portal.new.exe"
+        download_file(asset_url, exe_path)
+        script_path = temp_dir / "apply_onefile_update.ps1"
+        current_exe = Path(sys.executable).resolve()
+        backup_exe = current_exe.with_suffix(".old.exe")
+        script_text = f"""
+$ErrorActionPreference = 'Stop'
+$pidToWait = {current_pid}
+$newExe = {ps_quote(exe_path)}
+$targetExe = {ps_quote(current_exe)}
+$backupExe = {ps_quote(backup_exe)}
+while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 350 }}
+if (Test-Path -LiteralPath $backupExe) {{ Remove-Item -LiteralPath $backupExe -Force -ErrorAction SilentlyContinue }}
+if (Test-Path -LiteralPath $targetExe) {{ Move-Item -LiteralPath $targetExe -Destination $backupExe -Force }}
+Move-Item -LiteralPath $newExe -Destination $targetExe -Force
+Start-Sleep -Milliseconds 250
+Start-Process -FilePath $targetExe
+"""
+    script_path.write_text(script_text.strip(), encoding="utf-8")
+    subprocess.Popen(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+        ],
+        close_fds=True,
+        **hidden_subprocess_kwargs(new_process_group=True),
+    )
+    return f"Обновление {tag_name} скачано. Перезапускаем портал..."
 
 
 def extract_7z_archive(archive_path: Path, destination_dir: Path) -> None:
@@ -3290,6 +3507,8 @@ class UiBridge(QObject):
     snapshot_ready = Signal(object)
     snapshot_failed = Signal(str)
     setup_status_ready = Signal(object)
+    update_ready = Signal(object)
+    update_failed = Signal(str)
 
 
 class CardFrame(QFrame):
@@ -4959,6 +5178,8 @@ class MainWindow(QWidget):
         self.bridge.snapshot_ready.connect(self.on_snapshot_ready)
         self.bridge.snapshot_failed.connect(self.on_snapshot_failed)
         self.bridge.setup_status_ready.connect(self.on_setup_status_ready)
+        self.bridge.update_ready.connect(self.on_update_ready)
+        self.bridge.update_failed.connect(self.on_update_failed)
 
         self.config = load_config()
         self.state_cache = load_state()
@@ -4994,6 +5215,16 @@ class MainWindow(QWidget):
         self.install_setup_last_message = ""
         self.install_setup_last_error = False
         self.setup_page_widget: ComfySetupPage | None = None
+        self.release_info: dict[str, object] | None = None
+        self.update_check_inflight = False
+        self.update_download_inflight = False
+        self.update_banner_dismissed_tag = ""
+        self.onboarding_step = "mode"
+        self.onboarding_dismissed = False
+        self.onboarding_install_expanded = False
+        self.onboarding_force_space_step = False
+        self.onboarding_install_target_parent: Path | None = None
+        self.onboarding_install_rows: dict[str, SetupStatusRow] = {}
         self.refresh_inflight = False
         self.refresh_requested = False
         self.refresh_requested_logs = False
@@ -5087,8 +5318,9 @@ class MainWindow(QWidget):
 
         if self.autorun_mode:
             QTimer.singleShot(900, self.run_autorun_sequence)
-        elif not self.config.get("launch_mode_confirmed", False):
+        else:
             QTimer.singleShot(320, self.prompt_launch_choice_if_needed)
+        QTimer.singleShot(1600, self.request_update_check)
 
     def build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -5135,6 +5367,14 @@ class MainWindow(QWidget):
         self.telegram_brand_button.setToolTip("Открыть Telegram-канал ComfyUI Guide")
         self.telegram_brand_button.setCursor(Qt.PointingHandCursor)
         self.telegram_brand_button.clicked.connect(self.open_telegram_channel)
+
+        self.github_brand_button = QPushButton("")
+        self.github_brand_button.setObjectName("githubBrandButton")
+        self.github_brand_button.setFixedSize(GITHUB_BRAND_SIZE, GITHUB_BRAND_SIZE)
+        self.github_brand_button.setIconSize(QSize(GITHUB_BRAND_SIZE, GITHUB_BRAND_SIZE))
+        self.github_brand_button.setToolTip("Открыть GitHub репозиторий Comfy Portal")
+        self.github_brand_button.setCursor(Qt.PointingHandCursor)
+        self.github_brand_button.clicked.connect(self.open_github_repo)
 
         brand_layout = QVBoxLayout()
         brand_layout.setSpacing(2)
@@ -5196,6 +5436,7 @@ class MainWindow(QWidget):
 
         topbar_layout.addWidget(self.settings_button, 0, Qt.AlignLeft)
         topbar_layout.addWidget(self.telegram_brand_button, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        topbar_layout.addWidget(self.github_brand_button, 0, Qt.AlignLeft | Qt.AlignVCenter)
         topbar_layout.addLayout(brand_layout, 0)
         topbar_layout.addStretch(1)
         topbar_layout.addLayout(top_actions_layout, 0)
@@ -5354,6 +5595,43 @@ class MainWindow(QWidget):
         self.toast.setVisible(False)
         self.toast.setAlignment(Qt.AlignCenter)
 
+        self.update_banner = CardFrame("updateBanner")
+        self.update_banner.setParent(self)
+        self.update_banner.setAttribute(Qt.WA_StyledBackground, True)
+        self.update_banner.hide()
+        update_banner_layout = QVBoxLayout(self.update_banner)
+        update_banner_layout.setContentsMargins(16, 14, 16, 14)
+        update_banner_layout.setSpacing(10)
+        update_header_layout = QHBoxLayout()
+        update_header_layout.setSpacing(10)
+        self.update_banner_title = QLabel("Доступно обновление")
+        self.update_banner_title.setObjectName("updateBannerTitle")
+        self.update_banner_close = QPushButton("×")
+        self.update_banner_close.setObjectName("updateBannerClose")
+        self.update_banner_close.setFixedSize(26, 26)
+        self.update_banner_close.setCursor(Qt.PointingHandCursor)
+        self.update_banner_close.clicked.connect(self.dismiss_update_banner)
+        update_header_layout.addWidget(self.update_banner_title, 1)
+        update_header_layout.addWidget(self.update_banner_close, 0, Qt.AlignRight)
+        self.update_banner_subtitle = QLabel("На GitHub вышел новый релиз Comfy Portal.")
+        self.update_banner_subtitle.setObjectName("updateBannerSubtitle")
+        self.update_banner_subtitle.setWordWrap(True)
+        update_actions_layout = QHBoxLayout()
+        update_actions_layout.setSpacing(8)
+        self.update_banner_view_button = QPushButton("Что нового")
+        self.update_banner_view_button.setObjectName("updateBannerSecondaryButton")
+        self.update_banner_view_button.setCursor(Qt.PointingHandCursor)
+        self.update_banner_view_button.clicked.connect(self.open_github_releases)
+        self.update_banner_install_button = QPushButton("Обновить")
+        self.update_banner_install_button.setObjectName("updateBannerPrimaryButton")
+        self.update_banner_install_button.setCursor(Qt.PointingHandCursor)
+        self.update_banner_install_button.clicked.connect(self.install_github_update)
+        update_actions_layout.addWidget(self.update_banner_view_button, 0)
+        update_actions_layout.addWidget(self.update_banner_install_button, 0)
+        update_banner_layout.addLayout(update_header_layout)
+        update_banner_layout.addWidget(self.update_banner_subtitle)
+        update_banner_layout.addLayout(update_actions_layout)
+
         self.drawer_backdrop = DrawerBackdrop(self)
         self.drawer_backdrop.clicked.connect(self.close_overlays)
 
@@ -5363,43 +5641,211 @@ class MainWindow(QWidget):
         self.launch_choice_card = CardFrame("launchChoiceCard")
         self.launch_choice_card.setParent(self)
         self.launch_choice_card.setAttribute(Qt.WA_StyledBackground, True)
-        self.launch_choice_card.setMinimumSize(500, 280)
+        self.launch_choice_card.setMinimumSize(680, 560)
         self.launch_choice_card.hide()
         self.launch_choice_opacity = QGraphicsOpacityEffect(self.launch_choice_card)
         self.launch_choice_opacity.setOpacity(1.0)
         self.launch_choice_card.setGraphicsEffect(self.launch_choice_opacity)
 
         launch_choice_layout = QVBoxLayout(self.launch_choice_card)
-        launch_choice_layout.setContentsMargins(34, 32, 34, 30)
+        launch_choice_layout.setContentsMargins(26, 22, 26, 24)
         launch_choice_layout.setSpacing(16)
 
-        self.launch_choice_title = QLabel("Как запускать ComfyUI?")
-        self.launch_choice_title.setObjectName("launchChoiceTitle")
-        self.launch_choice_subtitle = QLabel("Выбери запуск на видеокарте или CPU-режим. Это можно поменять потом в Settings.")
-        self.launch_choice_subtitle.setObjectName("launchChoiceSubtitle")
-        self.launch_choice_subtitle.setWordWrap(True)
+        launch_choice_header = QHBoxLayout()
+        launch_choice_header.setSpacing(10)
+        launch_choice_header.addStretch(1)
+        self.launch_choice_close_button = QPushButton("×")
+        self.launch_choice_close_button.setObjectName("launchChoiceCloseButton")
+        self.launch_choice_close_button.setFixedSize(34, 34)
+        self.launch_choice_close_button.setCursor(Qt.PointingHandCursor)
+        self.launch_choice_close_button.clicked.connect(self.dismiss_onboarding)
+        launch_choice_header.addWidget(self.launch_choice_close_button, 0, Qt.AlignRight)
+        launch_choice_layout.addLayout(launch_choice_header)
 
-        launch_choice_buttons = QHBoxLayout()
-        launch_choice_buttons.setSpacing(12)
-        self.launch_choice_gpu_button = QPushButton("GPU / NVIDIA")
-        self.launch_choice_gpu_button.setObjectName("launchChoicePrimaryButton")
-        self.launch_choice_gpu_button.setMinimumHeight(54)
-        self.launch_choice_gpu_button.setCursor(Qt.PointingHandCursor)
-        self.launch_choice_gpu_button.clicked.connect(lambda: self.choose_launch_mode("fp16"))
-        self.launch_choice_cpu_button = QPushButton("CPU")
-        self.launch_choice_cpu_button.setObjectName("launchChoiceSecondaryButton")
-        self.launch_choice_cpu_button.setMinimumHeight(54)
-        self.launch_choice_cpu_button.setCursor(Qt.PointingHandCursor)
-        self.launch_choice_cpu_button.clicked.connect(lambda: self.choose_launch_mode("cpu"))
-        launch_choice_buttons.addWidget(self.launch_choice_gpu_button, 1)
-        launch_choice_buttons.addWidget(self.launch_choice_cpu_button, 1)
+        self.launch_choice_stack = QStackedWidget()
+        self.launch_choice_stack.setObjectName("launchChoiceStack")
+        launch_choice_layout.addWidget(self.launch_choice_stack, 1)
 
-        launch_choice_layout.addStretch(1)
-        launch_choice_layout.addWidget(self.launch_choice_title)
-        launch_choice_layout.addWidget(self.launch_choice_subtitle)
-        launch_choice_layout.addSpacing(8)
-        launch_choice_layout.addLayout(launch_choice_buttons)
-        launch_choice_layout.addStretch(1)
+        self.onboarding_space_page = QWidget()
+        onboarding_space_layout = QVBoxLayout(self.onboarding_space_page)
+        onboarding_space_layout.setContentsMargins(6, 6, 6, 6)
+        onboarding_space_layout.setSpacing(14)
+        self.onboarding_space_title = QLabel("У нас не хватает места для полной установки")
+        self.onboarding_space_title.setObjectName("launchChoiceTitle")
+        self.onboarding_space_hint = QLabel("Сейчас проверили свободное место. Если Comfy уже стоит, просто укажи папку и мы перепроверим. Если нет, можно закрыть онбординг и установить потом вручную.")
+        self.onboarding_space_hint.setObjectName("launchChoiceSubtitle")
+        self.onboarding_space_hint.setWordWrap(True)
+        self.onboarding_space_stats = QLabel("")
+        self.onboarding_space_stats.setObjectName("launchChoiceStats")
+        self.onboarding_space_stats.setWordWrap(True)
+        self.onboarding_space_folder_label = QLabel("Если Comfy уже установлен, укажи папку и мы сразу перепроверим.")
+        self.onboarding_space_folder_label.setObjectName("launchChoiceStepHint")
+        self.onboarding_space_folder_label.setWordWrap(True)
+        self.onboarding_space_pick_button = QPushButton("Уже есть Comfy")
+        self.onboarding_space_pick_button.setObjectName("launchChoicePrimaryButton")
+        self.onboarding_space_pick_button.setMinimumHeight(52)
+        self.onboarding_space_pick_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_space_pick_button.clicked.connect(self.on_onboarding_choose_existing_clicked)
+        self.onboarding_space_skip_button = QPushButton("Пропустить")
+        self.onboarding_space_skip_button.setObjectName("launchChoiceContinueButton")
+        self.onboarding_space_skip_button.setMinimumHeight(52)
+        self.onboarding_space_skip_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_space_skip_button.clicked.connect(self.skip_onboarding_install_step)
+        onboarding_space_actions = QHBoxLayout()
+        onboarding_space_actions.setSpacing(12)
+        onboarding_space_actions.addWidget(self.onboarding_space_pick_button, 1)
+        onboarding_space_actions.addWidget(self.onboarding_space_skip_button, 1)
+        onboarding_space_layout.addWidget(self.onboarding_space_title)
+        onboarding_space_layout.addWidget(self.onboarding_space_hint)
+        onboarding_space_layout.addWidget(self.onboarding_space_stats)
+        onboarding_space_layout.addStretch(1)
+        onboarding_space_layout.addWidget(self.onboarding_space_folder_label)
+        onboarding_space_layout.addLayout(onboarding_space_actions)
+        self.launch_choice_stack.addWidget(self.onboarding_space_page)
+
+        self.onboarding_install_page = QWidget()
+        onboarding_install_layout = QVBoxLayout(self.onboarding_install_page)
+        onboarding_install_layout.setContentsMargins(6, 6, 6, 6)
+        onboarding_install_layout.setSpacing(14)
+        self.onboarding_install_title = QLabel("Подключим ComfyUI к порталу")
+        self.onboarding_install_title.setObjectName("launchChoiceTitle")
+        self.onboarding_install_hint = QLabel("Если portable ComfyUI уже есть, укажи папку. Если нет, портал сам скачает сборку, создаст папки и разложит все файлы по местам.")
+        self.onboarding_install_hint.setObjectName("launchChoiceSubtitle")
+        self.onboarding_install_hint.setWordWrap(True)
+        self.onboarding_install_path = QLabel("")
+        self.onboarding_install_path.setObjectName("launchChoiceStats")
+        self.onboarding_install_path.setWordWrap(True)
+
+        onboarding_status = cached_comfy_setup_status(self.config)
+        self.onboarding_install_section = SetupSectionCard("comfy", "Comfy setup", "Installing...", self.theme)
+        self.onboarding_install_section.action_button.hide()
+        self.onboarding_install_section.set_collapsed(True)
+        self.onboarding_install_rows["comfy"] = SetupStatusRow("Portable ComfyUI", self.theme)
+        self.onboarding_install_rows["manager"] = SetupStatusRow("ComfyUI Manager", self.theme)
+        self.onboarding_install_section.add_row(self.onboarding_install_rows["comfy"])
+        self.onboarding_install_section.add_row(self.onboarding_install_rows["manager"])
+        for model in onboarding_status.get("models", []):
+            key = f"model:{model['title']}"
+            row = SetupStatusRow(model["title"], self.theme)
+            self.onboarding_install_rows[key] = row
+            self.onboarding_install_section.add_row(row)
+        self.refresh_onboarding_install_rows(onboarding_status)
+
+        self.onboarding_install_pick_button = QPushButton("Уже есть Comfy")
+        self.onboarding_install_pick_button.setObjectName("launchChoiceSecondaryButton")
+        self.onboarding_install_pick_button.setMinimumHeight(50)
+        self.onboarding_install_pick_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_install_pick_button.clicked.connect(self.on_onboarding_choose_existing_clicked)
+        self.onboarding_install_start_button = QPushButton("Установить")
+        self.onboarding_install_start_button.setObjectName("launchChoiceSuccessButton")
+        self.onboarding_install_start_button.setMinimumHeight(50)
+        self.onboarding_install_start_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_install_start_button.clicked.connect(self.begin_onboarding_install)
+        self.onboarding_install_skip_button = QPushButton("Пропустить")
+        self.onboarding_install_skip_button.setObjectName("launchChoiceContinueButton")
+        self.onboarding_install_skip_button.setMinimumHeight(50)
+        self.onboarding_install_skip_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_install_skip_button.clicked.connect(self.skip_onboarding_install_step)
+        onboarding_install_actions = QHBoxLayout()
+        onboarding_install_actions.setSpacing(12)
+        onboarding_install_actions.addWidget(self.onboarding_install_pick_button, 1)
+        onboarding_install_actions.addWidget(self.onboarding_install_start_button, 1)
+        onboarding_install_actions.addWidget(self.onboarding_install_skip_button, 1)
+        onboarding_install_layout.addWidget(self.onboarding_install_title)
+        onboarding_install_layout.addWidget(self.onboarding_install_hint)
+        onboarding_install_layout.addWidget(self.onboarding_install_path)
+        onboarding_install_layout.addWidget(self.onboarding_install_section)
+        onboarding_install_layout.addStretch(1)
+        onboarding_install_layout.addLayout(onboarding_install_actions)
+        self.launch_choice_stack.addWidget(self.onboarding_install_page)
+
+        self.onboarding_mode_page = QWidget()
+        onboarding_mode_layout = QVBoxLayout(self.onboarding_mode_page)
+        onboarding_mode_layout.setContentsMargins(6, 6, 6, 6)
+        onboarding_mode_layout.setSpacing(14)
+        self.onboarding_mode_title = QLabel("Для начала использования выбери способ запуска ComfyUI")
+        self.onboarding_mode_title.setObjectName("launchChoiceTitle")
+        self.onboarding_mode_hint = QLabel("GPU режим рекомендуем для большинства ПК. CPU режим стоит брать только если видеокарты нет или она не подходит.")
+        self.onboarding_mode_hint.setObjectName("launchChoiceSubtitle")
+        self.onboarding_mode_hint.setWordWrap(True)
+        self.onboarding_gpu_button = QPushButton("GPU")
+        self.onboarding_gpu_button.setObjectName("launchChoiceModeGreenButton")
+        self.onboarding_gpu_button.setMinimumHeight(58)
+        self.onboarding_gpu_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_gpu_button.clicked.connect(lambda: self.set_onboarding_mode("fp16"))
+        self.onboarding_cpu_button = QPushButton("CPU")
+        self.onboarding_cpu_button.setObjectName("launchChoiceModeRedButton")
+        self.onboarding_cpu_button.setMinimumHeight(58)
+        self.onboarding_cpu_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_cpu_button.clicked.connect(lambda: self.set_onboarding_mode("cpu"))
+        self.onboarding_mode_recommend = QLabel("Рекомендуется: GPU")
+        self.onboarding_mode_recommend.setObjectName("launchChoiceStepHint")
+        mode_buttons_layout = QHBoxLayout()
+        mode_buttons_layout.setSpacing(12)
+        mode_buttons_layout.addWidget(self.onboarding_gpu_button, 1)
+        mode_buttons_layout.addWidget(self.onboarding_cpu_button, 1)
+        self.onboarding_mode_continue = QPushButton("Продолжить")
+        self.onboarding_mode_continue.setObjectName("launchChoiceContinueButton")
+        self.onboarding_mode_continue.setMinimumHeight(52)
+        self.onboarding_mode_continue.setCursor(Qt.PointingHandCursor)
+        self.onboarding_mode_continue.clicked.connect(self.advance_onboarding_from_mode)
+        onboarding_mode_layout.addWidget(self.onboarding_mode_title)
+        onboarding_mode_layout.addWidget(self.onboarding_mode_hint)
+        onboarding_mode_layout.addLayout(mode_buttons_layout)
+        onboarding_mode_layout.addWidget(self.onboarding_mode_recommend)
+        onboarding_mode_layout.addStretch(1)
+        onboarding_mode_layout.addWidget(self.onboarding_mode_continue)
+        self.launch_choice_stack.addWidget(self.onboarding_mode_page)
+
+        self.onboarding_subdomain_page = QWidget()
+        onboarding_subdomain_layout = QVBoxLayout(self.onboarding_subdomain_page)
+        onboarding_subdomain_layout.setContentsMargins(6, 6, 6, 6)
+        onboarding_subdomain_layout.setSpacing(14)
+        self.onboarding_subdomain_title = QLabel("Придумай свою ссылку для Comfy")
+        self.onboarding_subdomain_title.setObjectName("launchChoiceTitle")
+        self.onboarding_subdomain_hint = QLabel("Минимум 6 символов. Разрешены только буквы, цифры и дефис.")
+        self.onboarding_subdomain_hint.setObjectName("launchChoiceSubtitle")
+        self.onboarding_subdomain_hint.setWordWrap(True)
+        self.onboarding_subdomain_input = QLineEdit()
+        self.onboarding_subdomain_input.setObjectName("launchChoiceInput")
+        self.onboarding_subdomain_input.setMinimumHeight(54)
+        self.onboarding_subdomain_input.setPlaceholderText("mycomfy01")
+        self.onboarding_subdomain_input.textEdited.connect(self.on_onboarding_subdomain_changed)
+        self.onboarding_subdomain_error = QLabel("Субдомен еще не подходит.")
+        self.onboarding_subdomain_error.setObjectName("launchChoiceError")
+        self.onboarding_subdomain_error.setWordWrap(True)
+        self.onboarding_subdomain_continue = QPushButton("Продолжить")
+        self.onboarding_subdomain_continue.setObjectName("launchChoiceContinueButton")
+        self.onboarding_subdomain_continue.setMinimumHeight(52)
+        self.onboarding_subdomain_continue.setCursor(Qt.PointingHandCursor)
+        self.onboarding_subdomain_continue.clicked.connect(self.advance_onboarding_from_subdomain)
+        onboarding_subdomain_layout.addWidget(self.onboarding_subdomain_title)
+        onboarding_subdomain_layout.addWidget(self.onboarding_subdomain_hint)
+        onboarding_subdomain_layout.addWidget(self.onboarding_subdomain_input)
+        onboarding_subdomain_layout.addWidget(self.onboarding_subdomain_error)
+        onboarding_subdomain_layout.addStretch(1)
+        onboarding_subdomain_layout.addWidget(self.onboarding_subdomain_continue)
+        self.launch_choice_stack.addWidget(self.onboarding_subdomain_page)
+
+        self.onboarding_guide_page = QWidget()
+        onboarding_guide_layout = QVBoxLayout(self.onboarding_guide_page)
+        onboarding_guide_layout.setContentsMargins(6, 6, 6, 6)
+        onboarding_guide_layout.setSpacing(14)
+        self.onboarding_guide_title = QLabel("Все готово")
+        self.onboarding_guide_title.setObjectName("launchChoiceTitle")
+        self.onboarding_guide_hint = QLabel("Нажми Start, вставь ссылку в модуль `comfyui_url` и можно сразу пользоваться порталом.")
+        self.onboarding_guide_hint.setObjectName("launchChoiceSubtitle")
+        self.onboarding_guide_hint.setWordWrap(True)
+        self.onboarding_guide_start = QPushButton("Начать")
+        self.onboarding_guide_start.setObjectName("launchChoiceContinueButton")
+        self.onboarding_guide_start.setMinimumHeight(52)
+        self.onboarding_guide_start.setCursor(Qt.PointingHandCursor)
+        self.onboarding_guide_start.clicked.connect(self.complete_onboarding)
+        onboarding_guide_layout.addWidget(self.onboarding_guide_title)
+        onboarding_guide_layout.addWidget(self.onboarding_guide_hint)
+        onboarding_guide_layout.addStretch(1)
+        onboarding_guide_layout.addWidget(self.onboarding_guide_start)
+        self.launch_choice_stack.addWidget(self.onboarding_guide_page)
 
         self.drawer = DrawerFrame("settingsDrawer")
         self.drawer.setParent(self)
@@ -5833,14 +6279,14 @@ class MainWindow(QWidget):
                 font-weight: 700;
                 background: transparent;
             }}
-            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#saveSettingsButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#installButton, QPushButton#logsBackButton, QPushButton#logsButton {{
+            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#saveSettingsButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#installButton, QPushButton#logsBackButton, QPushButton#logsButton, QPushButton#githubBrandButton {{
                 border: none;
                 border-radius: 20px;
                 padding: 12px 18px;
                 font-size: 14px;
                 font-weight: 700;
             }}
-            QPushButton#telegramBrandButton {{
+            QPushButton#telegramBrandButton, QPushButton#githubBrandButton {{
                 background: transparent;
                 border: none;
                 padding: 0px;
@@ -5853,7 +6299,7 @@ class MainWindow(QWidget):
                 font-size: 15px;
                 font-weight: 700;
             }}
-            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton {{
+            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#githubBrandButton {{
                 padding: 0px;
             }}
             QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#logsBackButton, QPushButton#logsButton {{
@@ -5890,6 +6336,55 @@ class MainWindow(QWidget):
                 border-radius: 15px;
                 min-width: 88px;
             }}
+            QFrame#updateBanner {{
+                background: {self.theme.panel_bg};
+                border: 1px solid {self.theme.border};
+                border-radius: 24px;
+            }}
+            QLabel#updateBannerTitle {{
+                color: {self.theme.text};
+                font-size: 15px;
+                font-weight: 800;
+            }}
+            QLabel#updateBannerSubtitle {{
+                color: {self.theme.muted};
+                font-size: 12px;
+            }}
+            QPushButton#updateBannerClose {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.text};
+                border: 1px solid {self.theme.border};
+                border-radius: 13px;
+                padding: 0px;
+                font-size: 16px;
+                font-weight: 800;
+            }}
+            QPushButton#updateBannerClose:hover {{
+                background: {self.theme.soft_btn_hover};
+            }}
+            QPushButton#updateBannerPrimaryButton, QPushButton#updateBannerSecondaryButton {{
+                min-height: 38px;
+                border-radius: 16px;
+                padding: 0px 16px;
+                font-size: 13px;
+                font-weight: 800;
+            }}
+            QPushButton#updateBannerPrimaryButton {{
+                background: {self.theme.blue};
+                color: white;
+                border: none;
+            }}
+            QPushButton#updateBannerPrimaryButton:hover {{
+                background: {self.theme.blue_hover};
+            }}
+            QPushButton#updateBannerSecondaryButton {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.text};
+                border: 1px solid {self.theme.border};
+            }}
+            QPushButton#updateBannerSecondaryButton:hover {{
+                background: {self.theme.soft_btn_hover};
+            }}
             QPushButton#friendMiniDeleteButton {{
                 background: {self.theme.red};
                 color: white;
@@ -5913,7 +6408,47 @@ class MainWindow(QWidget):
                 color: white;
                 border: none;
             }}
-            QPushButton#launchChoicePrimaryButton, QPushButton#launchChoiceSecondaryButton {{
+            QLabel#launchChoiceStats {{
+                background: {self.theme.panel_alt};
+                border: 1px solid {self.theme.border};
+                border-radius: 18px;
+                color: {self.theme.text};
+                padding: 12px 14px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QLabel#launchChoiceStepHint {{
+                color: {self.theme.muted};
+                font-size: 13px;
+            }}
+            QLabel#launchChoiceError {{
+                color: {self.theme.red};
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QLineEdit#launchChoiceInput {{
+                background: {self.theme.panel_alt};
+                border: 2px solid {self.theme.border};
+                border-radius: 18px;
+                padding: 12px 14px;
+                font-size: 15px;
+                font-weight: 700;
+                color: {self.theme.text};
+                selection-background-color: {self.theme.blue};
+            }}
+            QPushButton#launchChoiceCloseButton {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.text};
+                border: 1px solid {self.theme.border};
+                border-radius: 17px;
+                padding: 0px;
+                font-size: 18px;
+                font-weight: 800;
+            }}
+            QPushButton#launchChoiceCloseButton:hover {{
+                background: {self.theme.soft_btn_hover};
+            }}
+            QPushButton#launchChoicePrimaryButton, QPushButton#launchChoiceSecondaryButton, QPushButton#launchChoiceContinueButton, QPushButton#launchChoiceSuccessButton, QPushButton#launchChoiceModeGreenButton, QPushButton#launchChoiceModeRedButton {{
                 min-height: 54px;
                 border-radius: 22px;
                 font-size: 16px;
@@ -5935,6 +6470,32 @@ class MainWindow(QWidget):
             }}
             QPushButton#launchChoiceSecondaryButton:hover {{
                 background: {self.theme.soft_btn_hover};
+            }}
+            QPushButton#launchChoiceContinueButton {{
+                background: {self.theme.blue};
+                color: white;
+                border: none;
+            }}
+            QPushButton#launchChoiceContinueButton:hover {{
+                background: {self.theme.blue_hover};
+            }}
+            QPushButton#launchChoiceSuccessButton {{
+                background: {self.theme.green};
+                color: white;
+                border: none;
+            }}
+            QPushButton#launchChoiceSuccessButton:hover {{
+                background: #159447;
+            }}
+            QPushButton#launchChoiceModeGreenButton {{
+                background: {self.theme.green};
+                color: white;
+                border: none;
+            }}
+            QPushButton#launchChoiceModeRedButton {{
+                background: {self.theme.red};
+                color: white;
+                border: none;
             }}
             QPushButton#saveSettingsButton:hover, QPushButton#friendCreateButton:hover {{
                 background: {self.theme.blue_hover};
@@ -6061,6 +6622,11 @@ class MainWindow(QWidget):
         self.friends_visual_state = ""
         self.install_visual_state = ""
         self.update_button_icons()
+        self.onboarding_install_section.apply_theme(self.theme)
+        for row in self.onboarding_install_rows.values():
+            row.apply_theme(self.theme)
+        self.update_onboarding_mode_buttons()
+        self.refresh_onboarding_subdomain_state()
         self.update_segment_buttons()
         self.update_action_button()
         self.update_friends_button()
@@ -6096,6 +6662,7 @@ class MainWindow(QWidget):
         install_icon_color = "#ffffff" if (self.install_setup_inflight or comfy_setup_has_missing(install_status)) else self.theme.text
         telegram_asset = resolve_asset_path("telegram_brand.png")
         settings_asset = resolve_asset_path("settings_brand.png")
+        github_asset = resolve_asset_path("github_brand_dark.png" if self.config.get("theme") == "dark" else "github_brand_light.png")
         if settings_asset.exists():
             self.settings_button.setIcon(QIcon(str(settings_asset)))
         else:
@@ -6111,6 +6678,10 @@ class MainWindow(QWidget):
             self.telegram_brand_button.setIcon(QIcon(str(telegram_asset)))
         else:
             self.telegram_brand_button.setIcon(build_icon_pixmap("telegram", "#ffffff", 28))
+        if github_asset.exists():
+            self.github_brand_button.setIcon(QIcon(str(github_asset)))
+        else:
+            self.github_brand_button.setIcon(build_icon_pixmap("logs", icon_color, 24))
         for row in self.friend_rows.values():
             row.apply_theme(self.theme, copy_icon, delete_icon)
 
@@ -6284,10 +6855,20 @@ class MainWindow(QWidget):
         self.position_overlays()
         self.place_launch_choice_overlay()
         self.place_toast()
+        self.place_update_banner()
 
     def place_toast(self) -> None:
         self.toast.adjustSize()
         self.toast.move((self.width() - self.toast.width()) // 2, self.height() - self.toast.height() - 24)
+
+    def place_update_banner(self) -> None:
+        if not self.update_banner.isVisible():
+            return
+        banner_width = min(380, max(280, self.width() // 3))
+        self.update_banner.resize(banner_width, self.update_banner.sizeHint().height())
+        margin = 26
+        self.update_banner.move(self.width() - self.update_banner.width() - margin, self.height() - self.update_banner.height() - margin)
+        self.update_banner.raise_()
 
     def backdrop_target_alpha(self) -> float:
         return 88.0 if self.config.get("theme") == "dark" else 28.0
@@ -6326,8 +6907,8 @@ class MainWindow(QWidget):
 
     def place_launch_choice_overlay(self) -> None:
         self.launch_choice_backdrop.setGeometry(0, 0, self.width(), self.height())
-        card_width = min(760, max(500, self.width() - 180))
-        card_height = min(320, max(268, self.height() - 220))
+        card_width = min(820, max(640, self.width() - 180))
+        card_height = min(650, max(520, self.height() - 120))
         self.launch_choice_card.resize(card_width, card_height)
         if self.launch_choice_anim.state() != QAbstractAnimation.Running:
             self.launch_choice_card.move(self.launch_choice_target_pos(self.launch_choice_open))
@@ -6339,6 +6920,8 @@ class MainWindow(QWidget):
             return
         self.launch_choice_backdrop.raise_()
         self.launch_choice_card.raise_()
+        if self.update_banner.isVisible():
+            self.update_banner.raise_()
         if self.toast.isVisible():
             self.toast.raise_()
 
@@ -6346,22 +6929,15 @@ class MainWindow(QWidget):
         if self.overlays_open():
             self.drawer_backdrop.show()
             self.ensure_overlay_stack()
-            if self.config.get("smooth_animations", True):
-                self.backdrop_anim.stop()
-                self.backdrop_anim.setStartValue(self.drawer_backdrop.alpha)
-                self.backdrop_anim.setEndValue(self.backdrop_target_alpha())
-                self.backdrop_anim.start()
-            else:
-                self.drawer_backdrop.set_alpha(self.backdrop_target_alpha())
+            self.backdrop_anim.stop()
+            self.backdrop_anim.setStartValue(self.drawer_backdrop.alpha)
+            self.backdrop_anim.setEndValue(self.backdrop_target_alpha())
+            self.backdrop_anim.start()
         else:
-            if self.config.get("smooth_animations", True):
-                self.backdrop_anim.stop()
-                self.backdrop_anim.setStartValue(self.drawer_backdrop.alpha)
-                self.backdrop_anim.setEndValue(0.0)
-                self.backdrop_anim.start()
-            else:
-                self.drawer_backdrop.set_alpha(0.0)
-                self.drawer_backdrop.hide()
+            self.backdrop_anim.stop()
+            self.backdrop_anim.setStartValue(self.drawer_backdrop.alpha)
+            self.backdrop_anim.setEndValue(0.0)
+            self.backdrop_anim.start()
 
     def ensure_overlay_stack(self) -> None:
         if not self.overlays_open():
@@ -6377,6 +6953,8 @@ class MainWindow(QWidget):
             self.friends_panel.raise_()
             self.friends_button.raise_()
         self.ensure_launch_choice_stack()
+        if self.update_banner.isVisible():
+            self.update_banner.raise_()
         if self.toast.isVisible():
             self.toast.raise_()
 
@@ -6403,20 +6981,6 @@ class MainWindow(QWidget):
             self.launch_choice_backdrop.show()
             self.launch_choice_card.show()
             self.ensure_launch_choice_stack()
-        if not self.config.get("smooth_animations", True):
-            self.launch_choice_backdrop.set_alpha(self.launch_choice_backdrop_target_alpha() if opened else 0.0)
-            self.launch_choice_opacity.setOpacity(1.0 if opened else 0.0)
-            self.launch_choice_card.move(self.launch_choice_target_pos(opened))
-            self.launch_choice_card.setVisible(opened)
-            if not opened:
-                self.launch_choice_backdrop.hide()
-                if self.launch_choice_paused_poll:
-                    self.launch_choice_paused_poll = False
-                    if not self.poll_timer.isActive():
-                        self.poll_timer.start(POLL_MS)
-            elif self.toast.isVisible():
-                self.toast.raise_()
-            return
         if self.overlay_animation_count == 0 and self.poll_timer.isActive():
             self.poll_timer.stop()
         self.overlay_animation_count += 1
@@ -6470,19 +7034,6 @@ class MainWindow(QWidget):
         self.pending_page_index = target_index
         self.update_logs_button()
         self.update_install_button()
-        if not self.config.get("smooth_animations", True):
-            self.page_fade_anim.stop()
-            self.page_fade_phase = "idle"
-            self.page_stack.setCurrentIndex(target_index)
-            self.page_stack_opacity.setOpacity(1.0)
-            self.update_logs_button()
-            self.update_install_button()
-            self.request_refresh_view(include_logs=False)
-            if opened:
-                self.refresh_live_logs_fast()
-                if not self.logs_fast_timer.isActive():
-                    self.logs_fast_timer.start(LOG_VIEW_POLL_MS)
-            return
         self.page_fade_anim.stop()
         self.page_fade_phase = "out"
         self.page_fade_anim.setStartValue(self.page_stack_opacity.opacity())
@@ -6510,16 +7061,6 @@ class MainWindow(QWidget):
         self.pending_page_index = target_index
         self.update_logs_button()
         self.update_install_button()
-        if not self.config.get("smooth_animations", True):
-            self.page_fade_anim.stop()
-            self.page_fade_phase = "idle"
-            self.page_stack.setCurrentIndex(target_index)
-            self.page_stack_opacity.setOpacity(1.0)
-            self.update_install_button()
-            if opened:
-                self.request_setup_status_refresh(force_links=True)
-            self.request_refresh_view(include_logs=False)
-            return
         self.page_fade_anim.stop()
         self.page_fade_phase = "out"
         self.page_fade_anim.setStartValue(self.page_stack_opacity.opacity())
@@ -6551,6 +7092,8 @@ class MainWindow(QWidget):
         self.last_setup_page_refresh_at = time.monotonic()
         if self.setup_page_widget is not None:
             self.setup_page_widget.refresh_status(status)
+        if self.launch_choice_open:
+            self.refresh_onboarding_install_rows(status)
         self.update_install_button()
 
     def on_page_fade_finished(self) -> None:
@@ -6642,18 +7185,6 @@ class MainWindow(QWidget):
         self.drawer_hide_after_anim = False
         target = self.left_drawer_target(True)
         anim_start = QPoint(target.x() - PANEL_SLIDE_OFFSET, target.y())
-        if not self.config.get("smooth_animations", True):
-            if opened:
-                self.drawer.move(target)
-                self.drawer_opacity.setOpacity(1.0)
-                self.drawer.show()
-                self.ensure_overlay_stack()
-            else:
-                self.drawer_opacity.setOpacity(0.0)
-                self.drawer.move(self.left_drawer_target(False))
-                self.drawer.hide()
-            self.request_refresh_view()
-            return
         if self.drawer_fade_anim.state() != QAbstractAnimation.Running:
             self.overlay_animation_count += 1
             if self.poll_timer.isActive():
@@ -6690,19 +7221,6 @@ class MainWindow(QWidget):
         self.friends_hide_after_anim = False
         target = self.right_drawer_target(True)
         anim_start = QPoint(target.x() + PANEL_SLIDE_OFFSET, target.y())
-        if not self.config.get("smooth_animations", True):
-            if opened:
-                self.friends_panel.move(target)
-                self.friends_opacity.setOpacity(1.0)
-                self.friends_panel.show()
-                self.ensure_overlay_stack()
-            else:
-                self.friends_opacity.setOpacity(0.0)
-                self.friends_panel.move(self.right_drawer_target(False))
-                self.friends_panel.hide()
-            self.update_friends_button()
-            self.request_refresh_view()
-            return
         if self.friends_fade_anim.state() != QAbstractAnimation.Running:
             self.overlay_animation_count += 1
             if self.poll_timer.isActive():
@@ -6766,6 +7284,246 @@ class MainWindow(QWidget):
 
     def open_telegram_channel(self) -> None:
         QDesktopServices.openUrl(QUrl(TELEGRAM_CHANNEL_URL))
+
+    def open_github_repo(self) -> None:
+        QDesktopServices.openUrl(QUrl(GITHUB_REPO_URL))
+
+    def open_github_releases(self) -> None:
+        target = str((self.release_info or {}).get("html_url", "") or GITHUB_RELEASES_URL)
+        QDesktopServices.openUrl(QUrl(target))
+
+    def refresh_onboarding_install_rows(self, status: dict) -> None:
+        comfy_ready = bool(status.get("comfy_ready"))
+        manager_ready = bool(status.get("manager_ready"))
+        if "comfy" in self.onboarding_install_rows:
+            self.onboarding_install_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
+        if "manager" in self.onboarding_install_rows:
+            self.onboarding_install_rows["manager"].set_state(
+                manager_ready,
+                "Manager уже установлен" if manager_ready else ("Сначала нужен portable ComfyUI" if not comfy_ready else "Будет поставлен в custom_nodes"),
+                "ready" if manager_ready else "missing",
+            )
+        for model in status.get("models", []):
+            row = self.onboarding_install_rows.get(f"model:{model['title']}")
+            if not row:
+                continue
+            if model.get("ready"):
+                row.set_state(True, "Файл уже на месте.", "ready")
+            elif not model.get("download_checked", False):
+                row.set_state(False, "Проверяем прямую ссылку на скачивание.", "missing")
+            elif not model.get("download_available", True):
+                row.set_state(False, str(model.get("download_message", "") or "Сейчас скачать нельзя: ссылка недоступна."), "unavailable")
+            elif not comfy_ready:
+                row.set_state(False, "Сначала нужен portable ComfyUI.", "missing")
+            else:
+                row.set_state(False, "Будет скачан и положен в нужную папку.", "missing")
+        summary = "Все для Comfy уже готово." if comfy_core_missing_count(status) == 0 else f"Не хватает {comfy_core_missing_count(status)} компонентов для полного setup."
+        self.onboarding_install_section.set_summary(summary)
+        if not self.install_setup_inflight:
+            self.onboarding_install_section.clear_progress()
+
+    def update_onboarding_mode_buttons(self) -> None:
+        selected_mode = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+        gpu_selected = selected_mode != "cpu"
+        selected_style = "background: #16a34a; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
+        unselected_style = f"background: {self.theme.red}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
+        self.onboarding_gpu_button.setStyleSheet(selected_style if gpu_selected else unselected_style)
+        self.onboarding_cpu_button.setStyleSheet(selected_style if not gpu_selected else unselected_style)
+        self.onboarding_mode_recommend.setText("Рекомендуется: GPU" if gpu_selected else "Выбран CPU режим")
+
+    def refresh_onboarding_subdomain_state(self) -> None:
+        current = sanitize_subdomain(self.onboarding_subdomain_input.text())
+        valid = is_valid_main_subdomain(current)
+        border = "#16a34a" if valid else self.theme.red
+        self.onboarding_subdomain_input.setStyleSheet(
+            f"background: {self.theme.panel_alt}; border: 2px solid {border}; border-radius: 18px; padding: 12px 14px; font-size: 15px; font-weight: 700; color: {self.theme.text}; selection-background-color: {self.theme.blue};"
+        )
+        if valid:
+            self.onboarding_subdomain_error.setText(f"Будет ссылка: https://{current}.loca.lt")
+            self.onboarding_subdomain_error.setStyleSheet(f"color: {self.theme.green}; font-size: 12px; font-weight: 700;")
+            self.onboarding_subdomain_continue.setEnabled(True)
+            self.onboarding_subdomain_continue.setStyleSheet(
+                f"background: {self.theme.blue}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
+            )
+        else:
+            self.onboarding_subdomain_error.setText("Минимум 6 символов: только буквы, цифры и дефис.")
+            self.onboarding_subdomain_error.setStyleSheet(f"color: {self.theme.red}; font-size: 12px; font-weight: 700;")
+            self.onboarding_subdomain_continue.setEnabled(False)
+            self.onboarding_subdomain_continue.setStyleSheet(
+                f"background: {self.theme.red}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
+            )
+
+    def set_onboarding_step(self, step: str) -> None:
+        mapping = {"space": 0, "install": 1, "mode": 2, "subdomain": 3, "guide": 4}
+        self.onboarding_step = step
+        self.launch_choice_stack.setCurrentIndex(mapping.get(step, 2))
+        if step == "mode":
+            self.update_onboarding_mode_buttons()
+        elif step == "subdomain":
+            self.refresh_onboarding_subdomain_state()
+            self.onboarding_subdomain_input.setFocus()
+
+    def refresh_onboarding_flow(self) -> None:
+        status = cached_comfy_setup_status(self.config, force=True)
+        self.refresh_onboarding_install_rows(status)
+        enough_space, free_bytes, needed_bytes = has_enough_space_for_setup(status)
+        self.onboarding_space_stats.setText(f"Свободно: {format_bytes(free_bytes)}\nНужно примерно: {format_bytes(needed_bytes)}")
+        current_root = current_comfy_root(self.config)
+        self.onboarding_install_path.setText(
+            f"Portable-папка: {current_root}" if current_root else "Portable-папка пока не найдена. Можно выбрать существующую или поставить все с нуля."
+        )
+        if not comfy_core_has_missing(status):
+            self.set_onboarding_step("mode")
+            return
+        if not enough_space:
+            self.set_onboarding_step("space")
+            return
+        self.set_onboarding_step("install")
+
+    def dismiss_onboarding(self) -> None:
+        self.onboarding_dismissed = True
+        self.set_launch_choice_open(False)
+
+    def on_onboarding_choose_existing_clicked(self) -> None:
+        start_dir = self.config.get("comfy_root", "") or str(Path.home() / "Desktop")
+        chosen = QFileDialog.getExistingDirectory(self, "Выбери portable-папку ComfyUI", start_dir)
+        if not chosen:
+            return
+        resolved_root = coerce_comfy_root(chosen)
+        if not resolved_root:
+            self.show_toast("В выбранной папке не найден portable ComfyUI.", True)
+            return
+        self.config["comfy_root"] = str(resolved_root)
+        save_config(self.config)
+        self.load_controls_from_config(force=True)
+        self.request_refresh_view()
+        self.refresh_onboarding_flow()
+        if not comfy_core_has_missing(cached_comfy_setup_status(self.config, force=True)):
+            self.set_onboarding_step("mode")
+
+    def begin_onboarding_install(self) -> None:
+        if self.busy or self.install_setup_inflight:
+            return
+        start_dir = self.config.get("comfy_root", "") or str(Path.home() / "Desktop")
+        chosen = QFileDialog.getExistingDirectory(self, "Куда поставить portable ComfyUI", start_dir)
+        if not chosen:
+            return
+        install_parent = Path(chosen)
+        self.onboarding_install_target_parent = install_parent
+        self.install_setup_inflight = True
+        self.install_setup_scope = "comfy"
+        self.install_setup_paused_poll = self.poll_timer.isActive()
+        if self.install_setup_paused_poll:
+            self.poll_timer.stop()
+        self.install_setup_eta = estimate_setup_eta(cached_comfy_setup_status(self.config, force=True))
+        self.install_setup_progress_percent = 0
+        self.install_setup_progress_detail = "Ставим полный Comfy setup."
+        self.install_setup_progress_meta = f"Примерное время: {self.install_setup_eta}"
+        self.install_setup_last_scope = "comfy"
+        self.install_setup_last_message = ""
+        self.install_setup_last_error = False
+        self.onboarding_install_section.set_collapsed(False)
+        self.onboarding_install_section.set_progress(0, "Подготавливаем установку.", f"Примерное время: {self.install_setup_eta}", True)
+        self.onboarding_install_start_button.setEnabled(False)
+        self.update_install_button()
+        self.run_background(
+            lambda progress, current_parent=install_parent: install_comfy_core_setup(current_parent, progress),
+            job_kind="installsetup:comfy",
+            set_busy=False,
+            show_toast=False,
+            with_progress=True,
+        )
+
+    def skip_onboarding_install_step(self) -> None:
+        self.set_onboarding_step("mode")
+
+    def set_onboarding_mode(self, mode: str) -> None:
+        self.config["launch_mode"] = normalize_launch_mode(mode)
+        self.update_onboarding_mode_buttons()
+
+    def advance_onboarding_from_mode(self) -> None:
+        self.config["launch_mode"] = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+        self.config["launch_mode_confirmed"] = True
+        save_config(self.config)
+        self.load_controls_from_config(force=True)
+        current_value = sanitize_subdomain(self.config.get("subdomain", ""))
+        self.onboarding_subdomain_input.setText(current_value if len(current_value) >= ONBOARDING_MIN_SUBDOMAIN_LEN else "")
+        self.set_onboarding_step("subdomain")
+
+    def on_onboarding_subdomain_changed(self) -> None:
+        self.refresh_onboarding_subdomain_state()
+
+    def advance_onboarding_from_subdomain(self) -> None:
+        value = sanitize_subdomain(self.onboarding_subdomain_input.text())
+        if not is_valid_main_subdomain(value):
+            self.refresh_onboarding_subdomain_state()
+            return
+        self.config["subdomain"] = value
+        save_config(self.config)
+        self.load_controls_from_config(force=True)
+        self.set_onboarding_step("guide")
+
+    def complete_onboarding(self) -> None:
+        self.config["launch_mode_confirmed"] = True
+        self.config["onboarding_completed"] = True
+        save_config(self.config)
+        self.load_controls_from_config(force=True)
+        self.onboarding_dismissed = False
+        self.set_launch_choice_open(False)
+        self.show_toast("Портал готов к работе.")
+
+    def request_update_check(self, force: bool = False) -> None:
+        if self.update_check_inflight:
+            return
+        self.update_check_inflight = True
+
+        def worker() -> None:
+            try:
+                info = fetch_latest_release_info(force=force)
+                try:
+                    self.bridge.update_ready.emit(info)
+                except RuntimeError:
+                    return
+            except Exception as exc:
+                try:
+                    self.bridge.update_failed.emit(str(exc))
+                except RuntimeError:
+                    return
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_update_ready(self, info: dict) -> None:
+        self.update_check_inflight = False
+        self.release_info = dict(info)
+        if info.get("newer") and str(info.get("tag_name", "")) != self.update_banner_dismissed_tag:
+            self.show_update_banner(info)
+        else:
+            self.update_banner.hide()
+
+    def on_update_failed(self, _error_text: str) -> None:
+        self.update_check_inflight = False
+
+    def show_update_banner(self, info: dict) -> None:
+        version_text = str(info.get("tag_name", "") or "").strip()
+        self.update_banner_title.setText(f"Доступно обновление {version_text}" if version_text else "Доступно обновление")
+        self.update_banner_subtitle.setText("На GitHub вышел новый релиз. Можно скачать и обновить портал прямо из приложения.")
+        self.update_banner_install_button.setText("Обновить")
+        self.update_banner_install_button.setEnabled(True)
+        self.update_banner.show()
+        self.place_update_banner()
+
+    def dismiss_update_banner(self) -> None:
+        if self.release_info:
+            self.update_banner_dismissed_tag = str(self.release_info.get("tag_name", "") or "")
+        self.update_banner.hide()
+
+    def install_github_update(self) -> None:
+        if self.update_download_inflight or not self.release_info:
+            return
+        self.update_download_inflight = True
+        self.update_banner_install_button.setEnabled(False)
+        self.update_banner_install_button.setText("Скачиваем...")
+        self.run_background(lambda: prepare_release_update(self.release_info or {}), job_kind="appupdate", set_busy=False, show_toast=False)
 
     def open_comfy_guide(self) -> None:
         self.set_setup_view_open(True)
@@ -6884,19 +7642,14 @@ class MainWindow(QWidget):
         self.show_toast(f"Тема переключена: {mode}.")
 
     def prompt_launch_choice_if_needed(self) -> None:
-        if self.autorun_mode or self.config.get("launch_mode_confirmed", False):
+        if self.autorun_mode or self.onboarding_dismissed or self.config.get("onboarding_completed", False):
             return
+        self.refresh_onboarding_flow()
         self.set_launch_choice_open(True)
 
     def choose_launch_mode(self, mode: str) -> None:
-        self.config["launch_mode"] = normalize_launch_mode(mode)
-        self.config["launch_mode_confirmed"] = True
-        save_config(self.config)
-        self.load_controls_from_config(force=True)
-        self.set_launch_choice_open(False)
-        self.request_refresh_view(include_logs=False)
-        mode_title = COMFY_LAUNCH_MODES.get(self.config["launch_mode"], COMFY_LAUNCH_MODES[DEFAULT_LAUNCH_MODE])["title"]
-        self.show_toast(f"Режим запуска выбран: {mode_title}.")
+        self.set_onboarding_mode(mode)
+        self.advance_onboarding_from_mode()
 
     def set_launch_mode(self, mode: str) -> None:
         mode = normalize_launch_mode(mode)
@@ -7037,6 +7790,22 @@ class MainWindow(QWidget):
         self.install_setup_scope = scope or self.install_setup_scope or "comfy"
         if self.setup_page_widget is not None:
             self.setup_page_widget.update_install_progress(self.install_setup_scope, detail, percent, meta)
+        if self.launch_choice_open and self.onboarding_step == "install" and self.install_setup_scope == "comfy":
+            payload = parse_setup_progress_meta(meta)
+            row_key = str(payload.get("row_key", "") or "")
+            row_meta = str(payload.get("meta_text", "") or meta)
+            raw_row_percent = payload.get("row_percent")
+            row_percent = None if raw_row_percent is None else int(max(0, min(100, int(raw_row_percent))))
+            if row_key:
+                for current_key, row in self.onboarding_install_rows.items():
+                    if current_key == row_key:
+                        row.set_progress(row_percent, row_meta)
+                    else:
+                        row.clear_progress()
+            else:
+                for row in self.onboarding_install_rows.values():
+                    row.clear_progress()
+            self.onboarding_install_section.set_progress(percent, detail, row_meta or meta, True)
 
     def on_job_finished(self, message: str, is_error: bool, job_kind: str) -> None:
         silent = job_kind.endswith(":silent")
@@ -7063,15 +7832,30 @@ class MainWindow(QWidget):
             self.install_setup_progress_meta = "Готово." if not is_error else "Установка остановилась с ошибкой."
             if self.setup_page_widget is not None:
                 self.setup_page_widget.finish_install(scope, message, is_error)
+            if self.launch_choice_open and scope == "comfy":
+                self.onboarding_install_start_button.setEnabled(True)
+                status = cached_comfy_setup_status(self.config, force=True)
+                self.refresh_onboarding_install_rows(status)
+                self.onboarding_install_section.set_progress(0 if is_error else 100, message, "Установка остановилась с ошибкой." if is_error else "Готово.", True)
             self.install_setup_scope = ""
             if should_resume_poll and self.overlay_animation_count == 0 and not self.poll_timer.isActive():
                 self.poll_timer.start(POLL_MS)
+        elif kind == "appupdate":
+            self.update_download_inflight = False
+            self.update_banner_install_button.setEnabled(True)
+            self.update_banner_install_button.setText("Обновить")
+            if not is_error:
+                self.update_banner_subtitle.setText(message)
+                self.update_banner_install_button.setText("Перезапуск...")
+                QTimer.singleShot(180, QApplication.instance().quit)
         if self.busy:
             self.set_busy(False)
         if kind == "autorestart" and is_error and load_state().get("desired_running"):
             schedule_tunnel_retry(message)
         if kind == "friendrestore" and meta and is_error:
             schedule_friend_retry(meta, message)
+        if kind == "installsetup" and meta == "comfy" and not is_error and self.launch_choice_open and self.onboarding_step == "install":
+            self.set_onboarding_step("mode")
         self.request_refresh_view()
         if not silent:
             self.show_toast(message, is_error)
@@ -7434,9 +8218,11 @@ def main() -> None:
     if not config.get("comfy_root") and is_comfy_root(BASE_DIR):
         config["comfy_root"] = str(BASE_DIR)
     if not config.get("comfy_root"):
-        discovered = discover_comfy_root()
-        if discovered:
-            config["comfy_root"] = str(discovered)
+        for candidate in (BASE_DIR.parent, Path.home() / "Desktop", Path.home() / "Downloads"):
+            discovered = coerce_comfy_root(candidate)
+            if discovered:
+                config["comfy_root"] = str(discovered)
+                break
     save_config(config)
     save_state(load_state())
     try:

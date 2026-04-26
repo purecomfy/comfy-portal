@@ -58,7 +58,7 @@ Python 3.14 was used in the current project.
 ### One-file build with PyInstaller
 
 ```powershell
-python -m PyInstaller --clean --noconfirm --onefile --windowed --name "Comfy Portal" --icon ".\\assets\\comfy_portal.ico" --add-data ".\\assets\\comfy_portal.ico;assets" --add-data ".\\assets\\comfy_portal_icon.png;assets" --add-data ".\\assets\\telegram_brand.png;assets" --add-data ".\\assets\\settings_brand.png;assets" --add-data ".\\assets\\telegram_button_icon.png;assets" --add-data ".\\assets\\telegram_button_round.png;assets" .\\comfy_portal.py
+python -m PyInstaller --clean --noconfirm --onefile --windowed --name "Comfy Portal" --icon ".\\assets\\comfy_portal.ico" --add-data ".\\assets\\comfy_portal.ico;assets" --add-data ".\\assets\\comfy_portal_icon.png;assets" --add-data ".\\assets\\telegram_brand.png;assets" --add-data ".\\assets\\settings_brand.png;assets" --add-data ".\\assets\\github_brand_light.png;assets" --add-data ".\\assets\\github_brand_dark.png;assets" .\\comfy_portal.py
 ```
 
 ### Portable folder build with cx_Freeze
