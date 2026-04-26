@@ -1,15 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+
+ROOT = Path(r"C:\Users\14\ComfyPortalRepo")
+ASSETS = ROOT / "assets"
+
 
 a = Analysis(
-    ['C:\\Users\\14\\comfy_portal_py\\comfy_portal.py'],
-    pathex=[],
+    [str(ROOT / "comfy_portal.py")],
+    pathex=[str(ROOT)],
     binaries=[],
     datas=[
-        ('C:\\Users\\14\\comfy_portal_py\\assets\\comfy_portal.ico', 'assets'),
-        ('C:\\Users\\14\\comfy_portal_py\\assets\\comfy_portal_icon.png', 'assets'),
-        ('C:\\Users\\14\\comfy_portal_py\\assets\\telegram_brand.png', 'assets'),
-        ('C:\\Users\\14\\comfy_portal_py\\assets\\settings_brand.png', 'assets'),
+        (str(ASSETS / "comfy_portal.ico"), "assets"),
+        (str(ASSETS / "comfy_portal_icon.png"), "assets"),
+        (str(ASSETS / "telegram_brand.png"), "assets"),
+        (str(ASSETS / "settings_brand.png"), "assets"),
     ],
     hiddenimports=[],
     hookspath=[],
@@ -39,7 +45,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\14\\comfy_portal_py\\assets\\comfy_portal.ico'],
+    icon=[str(ASSETS / "comfy_portal.ico")],
 )
 
 coll = COLLECT(

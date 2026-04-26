@@ -77,6 +77,8 @@ MAX_FRIEND_LINKS = 5
 DISCOVER_COMFY_CACHE_TTL = 90.0
 DISCOVER_COMFY_BUDGET_SECONDS = 2.8
 DISCOVER_COMFY_DEEP_BUDGET_SECONDS = 4.5
+LOG_VIEW_POLL_MS = 1100
+PUBLIC_TUNNEL_CACHE_TTL = 18.0
 OVERLAY_ANIMATION_MS = 180
 PANEL_SLIDE_OFFSET = 6
 BACKDROP_FADE_MS = 220
@@ -289,6 +291,13 @@ REQUIRED_NODE_SPECS = (
         "repo": "https://github.com/cubiq/ComfyUI_essentials.git",
         "aliases": ["ComfyUI_essentials", "ComfyUI essentials", "essentials"],
     },
+    {
+        "title": "Comfyroll Studio",
+        "cnr_id": "comfyroll-studio",
+        "folder": "ComfyUI_Comfyroll_CustomNodes",
+        "repo": "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes.git",
+        "aliases": ["Comfyroll Studio", "Comfyroll", "ComfyUI_Comfyroll_CustomNodes", "CR nodes"],
+    },
 )
 WORKFLOW_CANDIDATE_NAMES = (
     "mainapi1.json",
@@ -340,6 +349,7 @@ INTERNET_STATUS_CACHE = {"at": 0.0, "ok": True}
 SETUP_STATUS_CACHE = {"at": 0.0, "key": "", "status": None}
 DOWNLOAD_LINK_STATUS_CACHE = {"items": {}}
 DISCOVER_COMFY_CACHE = {"at": 0.0, "path": None, "anchor": ""}
+PUBLIC_TUNNEL_STATUS_CACHE = {"items": {}}
 COMFY_LAUNCH_LOCK = threading.Lock()
 NETWORK_ERROR_HINTS = (
     "connection reset",
@@ -2552,6 +2562,56 @@ def detect_tunnel_url(path: Path, preferred_subdomain: str = "") -> str:
     return matches[-1]
 
 
+def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
+    clean_url = str(url or "").strip().rstrip("/")
+    if not clean_url:
+        return False
+    headers = {"User-Agent": DOWNLOAD_USER_AGENT}
+    probes = (
+        (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
+        (f"{clean_url}/queue", ("queue_running", "queue_pending", "running", "pending")),
+        (clean_url, ("comfy", "<!doctype html", "<html")),
+    )
+    for probe_url, markers in probes:
+        try:
+            request = urllib.request.Request(probe_url, headers=headers)
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                status = int(getattr(response, "status", response.getcode()) or 200)
+                body = response.read(768).decode("utf-8", errors="ignore").lower()
+                if 200 <= status < 500 and any(marker in body for marker in markers):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def cached_public_tunnel_ready(url: str, force: bool = False) -> bool:
+    clean_url = str(url or "").strip().rstrip("/")
+    if not clean_url:
+        return False
+    cache_items = PUBLIC_TUNNEL_STATUS_CACHE["items"]
+    now = time.monotonic()
+    cached = cache_items.get(clean_url)
+    if cached and not force and (now - float(cached.get("at", 0.0))) < PUBLIC_TUNNEL_CACHE_TTL:
+        return bool(cached.get("ready", False))
+    ready = public_comfy_url_ready(clean_url)
+    cache_items[clean_url] = {"ready": ready, "at": now}
+    return ready
+
+
+def wait_for_public_tunnel_url(log_path: Path, subdomain: str, timeout_seconds: float = 20.0, interval_seconds: float = 0.35) -> str:
+    deadline = time.time() + timeout_seconds
+    last_detected = ""
+    while time.time() < deadline:
+        detected = detect_tunnel_url(log_path, subdomain)
+        if detected:
+            last_detected = detected
+            if cached_public_tunnel_ready(detected, force=True):
+                return detected
+        time.sleep(interval_seconds)
+    return last_detected if last_detected and cached_public_tunnel_ready(last_detected, force=True) else ""
+
+
 def tail_text(path: Path, lines: int = 4) -> str:
     if not path.exists():
         return ""
@@ -2742,6 +2802,17 @@ def start_tunnel_if_needed() -> str:
         state["last_tunnel_error"] = ""
         save_state(state)
         reset_tunnel_retry()
+        ready_url = wait_for_public_tunnel_url(TUNNEL_OUT, config["subdomain"], timeout_seconds=22.0)
+        if ready_url:
+            state = load_state()
+            state["last_url"] = ready_url
+            state["last_tunnel_error"] = ""
+            save_state(state)
+            return "Туннель готов."
+        if not pid_is_running(proc.pid):
+            error_text = summarize_error_tail(TUNNEL_ERR) or "Туннель не успел подняться."
+            schedule_tunnel_retry(error_text)
+            raise RuntimeError(error_text)
         return "Туннель запускается."
 
 
@@ -2804,7 +2875,7 @@ def start_friend_tunnel(link_id: str) -> str:
             )
             schedule_friend_retry(link_id, error_text)
             raise RuntimeError(error_text)
-        detected_url = detect_tunnel_url(out_path, entry["subdomain"])
+        detected_url = wait_for_public_tunnel_url(out_path, entry["subdomain"], timeout_seconds=0.35, interval_seconds=0.05)
         if detected_url:
             ready_entry = update_friend_link_entry(
                 link_id,
@@ -3003,9 +3074,9 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         comfy_active = comfy_http_ready(config["port"])
     tunnel_active = any_tunnel_process(state)
     main_subdomain = normalize_subdomain(config.get("subdomain", ""))
-    expected_main_url = friend_url_for_subdomain(main_subdomain)
     detected_main_url = detect_tunnel_url(TUNNEL_OUT, main_subdomain) if tunnel_active else ""
-    url = detected_main_url or (expected_main_url if tunnel_active and main_subdomain else "")
+    main_url_ready = bool(detected_main_url and cached_public_tunnel_ready(detected_main_url))
+    url = detected_main_url if (tunnel_active and main_url_ready) else ""
     if tunnel_active:
         reset_tunnel_retry()
     if url and tunnel_active:
@@ -3021,6 +3092,8 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
     tunnel_error = state.get("last_tunnel_error", "")
     if not tunnel_error and not tunnel_active:
         tunnel_error = summarize_error_tail(TUNNEL_ERR)
+    if tunnel_active and detected_main_url and not main_url_ready:
+        tunnel_error = tunnel_error or "Ссылка прогревается. Ждем, пока Comfy начнет отвечать через туннель."
 
     friend_processes = friend_process_map()
     state_changed = False
@@ -3036,6 +3109,7 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         if not running_pid and pid_is_running(entry.get("pid")):
             running_pid = entry.get("pid")
         detected_url = detect_tunnel_url(out_path, entry["subdomain"])
+        public_ready = bool(detected_url and cached_public_tunnel_ready(detected_url))
         error_text = summarize_error_tail(err_path)
         status = entry.get("status", "starting")
         paused = bool(entry.get("paused", False))
@@ -3046,7 +3120,7 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
 
         created_age = now - float(entry.get("created_at", now) or now)
         if running_pid:
-            status = "active" if (detected_url or entry.get("status") == "active" or created_age >= 10.0) else "starting"
+            status = "active" if public_ready else "starting"
             paused = False
             friend_running = True
             if status == "active":
@@ -3606,6 +3680,7 @@ class FriendSubdomainDialog(QDialog):
         self.input.setPlaceholderText("myfriendlink")
         self.input.setMinimumHeight(44)
         self.input.returnPressed.connect(self.accept_subdomain)
+        self.input.textEdited.connect(lambda *_args: self.error_label.setVisible(False))
 
         self.error_label = QLabel("")
         self.error_label.setObjectName("dialogError")
@@ -3636,6 +3711,7 @@ class FriendSubdomainDialog(QDialog):
         layout.addLayout(actions)
 
         self.apply_theme()
+        QTimer.singleShot(0, self.input.setFocus)
 
     def apply_theme(self) -> None:
         self.setStyleSheet(
@@ -4929,6 +5005,7 @@ class MainWindow(QWidget):
         self.launch_choice_hide_after_anim = False
         self.launch_choice_paused_poll = False
         self.last_comfy_log_full = ""
+        self.logs_refresh_inflight = False
         self.last_setup_page_refresh_at = 0.0
         self.setup_status_refresh_inflight = False
         self.pending_page_index: int | None = None
@@ -4959,6 +5036,10 @@ class MainWindow(QWidget):
         self.busy_timer = QTimer(self)
         self.busy_timer.setTimerType(Qt.CoarseTimer)
         self.busy_timer.timeout.connect(self.animate_busy_button)
+
+        self.logs_fast_timer = QTimer(self)
+        self.logs_fast_timer.setTimerType(Qt.CoarseTimer)
+        self.logs_fast_timer.timeout.connect(self.refresh_live_logs_fast)
 
         self.drawer_anim = QPropertyAnimation(self.drawer, b"pos", self)
         self.drawer_anim.setDuration(OVERLAY_ANIMATION_MS)
@@ -6383,6 +6464,8 @@ class MainWindow(QWidget):
                 self.set_friends_panel_open(False)
             if self.setup_view_open:
                 self.setup_view_open = False
+        else:
+            self.logs_fast_timer.stop()
         self.logs_view_open = opened
         self.pending_page_index = target_index
         self.update_logs_button()
@@ -6394,7 +6477,11 @@ class MainWindow(QWidget):
             self.page_stack_opacity.setOpacity(1.0)
             self.update_logs_button()
             self.update_install_button()
-            self.request_refresh_view(include_logs=opened)
+            self.request_refresh_view(include_logs=False)
+            if opened:
+                self.refresh_live_logs_fast()
+                if not self.logs_fast_timer.isActive():
+                    self.logs_fast_timer.start(LOG_VIEW_POLL_MS)
             return
         self.page_fade_anim.stop()
         self.page_fade_phase = "out"
@@ -6480,9 +6567,15 @@ class MainWindow(QWidget):
         self.pending_page_index = None
         self.update_logs_button()
         self.update_install_button()
+        if self.logs_view_open:
+            self.refresh_live_logs_fast()
+            if not self.logs_fast_timer.isActive():
+                self.logs_fast_timer.start(LOG_VIEW_POLL_MS)
+        else:
+            self.logs_fast_timer.stop()
         if self.setup_view_open:
             self.request_setup_status_refresh(force_links=True)
-        self.request_refresh_view(include_logs=self.logs_view_open)
+        self.request_refresh_view(include_logs=False)
 
     def update_logs_button(self) -> None:
         snap = self.latest_snap or self.current_snapshot()
@@ -6500,6 +6593,37 @@ class MainWindow(QWidget):
                 f"border-radius: 20px; padding: 12px 18px; font-size: 14px; font-weight: 700;"
             )
         self.logs_button.setStyleSheet(style)
+
+    def apply_comfy_log_viewer_text(self, viewer_text: str) -> None:
+        normalized_text = viewer_text or "Логи ComfyUI появятся здесь после запуска."
+        if self.last_comfy_log_full == normalized_text:
+            return
+        log_scroll = self.logs_viewer.verticalScrollBar()
+        stick_to_bottom = log_scroll.value() >= max(0, log_scroll.maximum() - 8)
+        self.logs_viewer.setPlainText(normalized_text)
+        if stick_to_bottom:
+            log_scroll.setValue(log_scroll.maximum())
+        self.last_comfy_log_full = normalized_text
+
+    def refresh_live_logs_fast(self) -> None:
+        if not self.logs_view_open or self.overlay_animation_count != 0 or self.logs_refresh_inflight:
+            return
+        self.logs_refresh_inflight = True
+
+        def worker() -> None:
+            try:
+                viewer_text = combined_comfy_log_text(max_bytes=98304).strip() or "Логи ComfyUI появятся здесь после запуска."
+                QTimer.singleShot(0, lambda text=viewer_text: self.on_logs_fast_ready(text))
+            except Exception:
+                QTimer.singleShot(0, lambda: self.on_logs_fast_ready("Логи ComfyUI появятся здесь после запуска."))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_logs_fast_ready(self, viewer_text: str) -> None:
+        self.logs_refresh_inflight = False
+        if not self.logs_view_open:
+            return
+        self.apply_comfy_log_viewer_text(viewer_text)
 
     def run_intro_animation(self) -> None:
         return
@@ -7133,7 +7257,7 @@ class MainWindow(QWidget):
 
     def request_refresh_view(self, include_logs: bool | None = None) -> None:
         if include_logs is None:
-            include_logs = self.logs_view_open and self.overlay_animation_count == 0
+            include_logs = False
         include_logs = bool(include_logs)
         if self.refresh_inflight:
             self.refresh_requested = True
@@ -7276,14 +7400,7 @@ class MainWindow(QWidget):
 
         if self.logs_view_open or snap["logs"].get("comfy_full"):
             comfy_full_log = snap["logs"].get("comfy_full", "").strip()
-            viewer_text = comfy_full_log or "Логи ComfyUI появятся здесь после запуска."
-            if self.last_comfy_log_full != viewer_text:
-                log_scroll = self.logs_viewer.verticalScrollBar()
-                stick_to_bottom = log_scroll.value() >= max(0, log_scroll.maximum() - 8)
-                self.logs_viewer.setPlainText(viewer_text)
-                if stick_to_bottom:
-                    log_scroll.setValue(log_scroll.maximum())
-                self.last_comfy_log_full = viewer_text
+            self.apply_comfy_log_viewer_text(comfy_full_log or "Логи ComfyUI появятся здесь после запуска.")
 
         self.theme = THEMES[self.config["theme"]]
         theme_changed = self.applied_theme_name != self.config["theme"]
