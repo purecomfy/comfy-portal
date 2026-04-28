@@ -29,6 +29,14 @@ build_exe_options = {
         "functools",
         "pathlib",
         "psutil",
+        "py7zr",
+        "bcj",
+        "pyppmd",
+        "Cryptodome",
+        "multivolumefile",
+        "inflate64",
+        "brotli",
+        "texttable",
     ],
     "includes": [
         "winreg",
@@ -117,7 +125,7 @@ executables = [
 
 setup(
     name="Comfy Portal",
-    version="1.0.6",
+    version="1.1.0",
     description="ComfyUI launcher and tunnel manager",
     options={"build_exe": build_exe_options},
     executables=executables,

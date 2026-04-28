@@ -53,7 +53,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.1.0"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -1522,7 +1522,7 @@ def comfy_setup_status(config: dict | None = None) -> dict:
     root = current_comfy_root(config)
     configured_root = normalize_root_path(config.get("comfy_root", ""))
     root_path = root or (Path(configured_root) if configured_root else None)
-    root_text = str(root_path) if root_path else "Папка пока не выбрана"
+    root_text = str(root_path) if root_path else ""
     source = resolve_comfy_package_source()
     workflow_specs, unresolved_workflow_nodes, workflow_files = workflow_required_node_specs()
     manager_ready = bool(root and (root / "ComfyUI" / "custom_nodes" / "comfyui-manager").exists())
@@ -1684,7 +1684,7 @@ def parse_setup_progress_meta(meta: str) -> dict[str, object]:
     return {"meta_text": raw}
 
 
-def setup_stage_label(stage: str, fallback: str = "Installing") -> str:
+def setup_stage_label(stage: str, fallback: str = "Установка") -> str:
     return SETUP_STAGE_LABELS.get((stage or "").strip().lower(), fallback)
 
 
@@ -2015,6 +2015,31 @@ Start-Process -FilePath $targetExe
 
 def extract_7z_archive(archive_path: Path, destination_dir: Path) -> None:
     destination_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import py7zr
+
+        with py7zr.SevenZipFile(archive_path, mode="r") as archive:
+            archive.extractall(path=destination_dir)
+        return
+    except ModuleNotFoundError:
+        pass
+    except Exception as exc:
+        raise RuntimeError(f"Не удалось распаковать .7z архив встроенным распаковщиком: {exc}") from exc
+
+    seven_zip = next((name for name in ("7z", "7zz", "7za") if shutil.which(name)), "")
+    if seven_zip:
+        result = subprocess.run(
+            [seven_zip, "x", "-y", f"-o{destination_dir}", str(archive_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            **hidden_subprocess_kwargs(),
+        )
+        if result.returncode == 0:
+            return
+        error_text = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(error_text or "Не удалось распаковать архив ComfyUI через 7-Zip.")
+
     result = subprocess.run(
         ["tar", "-xf", str(archive_path), "-C", str(destination_dir)],
         capture_output=True,
@@ -2024,15 +2049,22 @@ def extract_7z_archive(archive_path: Path, destination_dir: Path) -> None:
     )
     if result.returncode != 0:
         error_text = result.stderr.strip() or result.stdout.strip() or "Не удалось распаковать архив ComfyUI."
-        raise RuntimeError(error_text)
+        raise RuntimeError(
+            "Не удалось распаковать архив ComfyUI. Встроенный py7zr не найден, 7-Zip не найден, "
+            f"а системный tar вернул ошибку: {error_text}"
+        )
 
 
 def install_comfyui_portable(install_parent: Path, progress=None) -> Path:
     install_parent = install_parent.expanduser().resolve()
+    install_parent.mkdir(parents=True, exist_ok=True)
     existing_root = discover_comfy_root_in(install_parent)
     if existing_root:
         if progress:
             progress(1.0, "Portable ComfyUI уже найден", build_setup_progress_meta("comfy", "done", 100, "Portable уже установлен"))
+        config = load_config()
+        config["comfy_root"] = str(existing_root)
+        save_config(config)
         return existing_root
 
     source = resolve_comfy_package_source()
@@ -4057,7 +4089,7 @@ class ComfyGuideDialog(QDialog):
 
         folder_title = QLabel("Portable folder")
         folder_title.setObjectName("guideSectionTitle")
-        folder_value = QLabel(self.status.get("root", "Папка пока не выбрана"))
+        folder_value = QLabel(self.status.get("root") or "Папка пока не выбрана")
         folder_value.setObjectName("guidePathText")
         folder_value.setWordWrap(True)
         status_layout.addWidget(folder_title)
@@ -4415,6 +4447,7 @@ class ComfyGuideDialog(QDialog):
         self.install_progress_detail.setText("Ставим portable ComfyUI, Manager, стартовые модели и missing nodes.")
         self.install_eta_label.setText(f"Примерное время: {eta_text}")
         self.install_button.setEnabled(False)
+        self.install_button.setText("Установка...")
         self.install_button.setCursor(Qt.ArrowCursor)
         self._progress_value = 0
         self._progress_detail = self.install_progress_detail.text()
@@ -4974,6 +5007,7 @@ class ComfySetupPage(QWidget):
         self.status = status
         self.status_rows: dict[str, SetupStatusRow] = {}
         self.active_scope = ""
+        self.install_target_path = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -5086,7 +5120,14 @@ class ComfySetupPage(QWidget):
         self.status = status
         comfy_ready = bool(status.get("comfy_ready"))
         manager_ready = bool(status.get("manager_ready"))
-        self.folder_label.setText(status.get("root", "Папка пока не выбрана"))
+        root_text = str(status.get("root", "") or "").strip()
+        if root_text:
+            self.folder_label.setText(root_text)
+            self.install_target_path = ""
+        elif self.install_target_path:
+            self.folder_label.setText(f"Папка установки: {self.install_target_path}")
+        else:
+            self.folder_label.setText("Папка пока не выбрана")
         self.status_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
         self.status_rows["manager"].set_state(
             manager_ready,
@@ -5125,22 +5166,34 @@ class ComfySetupPage(QWidget):
             self.nodes_section.set_summary("Nodes ставятся только после полного Comfy setup.")
         else:
             self.nodes_section.set_summary("Все nodes уже стоят." if nodes_missing == 0 else f"Не хватает {nodes_missing} nodes для workflow.")
-        self.comfy_section.set_action_state("Установить Comfy" if comfy_missing else "Все установлено", comfy_missing > 0 and self.active_scope != "nodes", self.active_scope == "comfy")
-        self.nodes_section.set_action_state(
-            "Установить nodes" if nodes_missing else "Все установлено",
-            comfy_ready and nodes_missing > 0 and self.active_scope != "comfy",
-            self.active_scope == "nodes",
-        )
+        if self.active_scope == "comfy":
+            self.comfy_section.set_action_state("Установка...", False, True)
+        else:
+            self.comfy_section.set_action_state("Установить Comfy" if comfy_missing else "Все установлено", comfy_missing > 0 and self.active_scope != "nodes", False)
+        if self.active_scope == "nodes":
+            self.nodes_section.set_action_state("Установка...", False, True)
+        else:
+            self.nodes_section.set_action_state(
+                "Установить nodes" if nodes_missing else "Все установлено",
+                comfy_ready and nodes_missing > 0 and self.active_scope != "comfy",
+                False,
+            )
         if self.active_scope != "comfy":
             self.comfy_section.clear_progress()
         if self.active_scope != "nodes":
             self.nodes_section.clear_progress()
 
+    def set_install_target_path(self, path: Path | str | None) -> None:
+        self.install_target_path = str(path or "").strip()
+        root_text = str(self.status.get("root", "") or "").strip()
+        if not root_text:
+            self.folder_label.setText(f"Папка установки: {self.install_target_path}" if self.install_target_path else "Папка пока не выбрана")
+
     def begin_install(self, scope: str, eta_text: str) -> None:
         self.active_scope = scope
         target = self.comfy_section if scope == "comfy" else self.nodes_section
         target.set_progress(0, "Подготавливаем установку.", f"Примерное время: {eta_text}", True)
-        target.set_action_state("Installing...", False, True)
+        target.set_action_state("Установка...", False, True)
         self.refresh_status(cached_comfy_setup_status(force=True))
 
     def update_install_progress(self, scope: str, detail: str, percent: int, meta: str = "") -> None:
@@ -7425,6 +7478,7 @@ class MainWindow(QWidget):
         self.onboarding_install_section.set_collapsed(False)
         self.onboarding_install_section.set_progress(0, "Подготавливаем установку.", f"Примерное время: {self.install_setup_eta}", True)
         self.onboarding_install_start_button.setEnabled(False)
+        self.onboarding_install_start_button.setText("Установка...")
         self.update_install_button()
         self.run_background(
             lambda progress, current_parent=install_parent: install_comfy_core_setup(current_parent, progress),
@@ -7559,7 +7613,6 @@ class MainWindow(QWidget):
         status = cached_comfy_setup_status(self.config, force=True)
         if self.setup_page_widget is not None:
             self.setup_page_widget.refresh_status(status)
-        missing = comfy_core_has_missing(status) if scope == "comfy" else comfy_nodes_have_missing(status)
         if scope == "nodes" and not status.get("comfy_ready"):
             self.install_setup_last_scope = "nodes"
             self.install_setup_last_message = "Сначала установи полный Comfy setup, потом уже nodes."
@@ -7567,16 +7620,6 @@ class MainWindow(QWidget):
             if self.setup_page_widget is not None:
                 self.setup_page_widget.finish_install("nodes", self.install_setup_last_message, True)
             self.show_toast(self.install_setup_last_message, True)
-            self.update_install_button()
-            return
-        if not missing:
-            self.install_setup_last_scope = scope
-            self.install_setup_last_message = "Все уже установлено."
-            self.install_setup_last_error = False
-            if self.setup_page_widget is not None:
-                self.setup_page_widget.finish_install(scope, "Все уже установлено.", False)
-            else:
-                self.show_toast("Все уже установлено.")
             self.update_install_button()
             return
         install_parent: Path | None = None
@@ -7592,7 +7635,31 @@ class MainWindow(QWidget):
                 else:
                     self.show_toast("Установка отменена: папка не выбрана.", True)
                 return
-            install_parent = Path(chosen)
+            chosen_path = Path(chosen).expanduser().resolve()
+            chosen_root = coerce_comfy_root(chosen_path)
+            if chosen_root:
+                self.config["comfy_root"] = str(chosen_root)
+                save_config(self.config)
+                self.load_controls_from_config(force=True)
+                status = cached_comfy_setup_status(self.config, force=True)
+                if self.setup_page_widget is not None:
+                    self.setup_page_widget.set_install_target_path("")
+                    self.setup_page_widget.refresh_status(status)
+            else:
+                install_parent = chosen_path
+                if self.setup_page_widget is not None:
+                    self.setup_page_widget.set_install_target_path(chosen_path)
+        missing = comfy_core_has_missing(status) if scope == "comfy" else comfy_nodes_have_missing(status)
+        if not missing:
+            self.install_setup_last_scope = scope
+            self.install_setup_last_message = "Все уже установлено."
+            self.install_setup_last_error = False
+            if self.setup_page_widget is not None:
+                self.setup_page_widget.finish_install(scope, "Все уже установлено.", False)
+            else:
+                self.show_toast("Все уже установлено.")
+            self.update_install_button()
+            return
         self.install_setup_inflight = True
         self.install_setup_scope = scope
         self.install_setup_paused_poll = self.poll_timer.isActive()
@@ -7834,6 +7901,7 @@ class MainWindow(QWidget):
                 self.setup_page_widget.finish_install(scope, message, is_error)
             if self.launch_choice_open and scope == "comfy":
                 self.onboarding_install_start_button.setEnabled(True)
+                self.onboarding_install_start_button.setText("Установить")
                 status = cached_comfy_setup_status(self.config, force=True)
                 self.refresh_onboarding_install_rows(status)
                 self.onboarding_install_section.set_progress(0 if is_error else 100, message, "Установка остановилась с ошибкой." if is_error else "Готово.", True)
