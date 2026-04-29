@@ -5,6 +5,7 @@ from cx_Freeze import Executable, setup
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
+TOOLS = ROOT / "tools"
 PYTHON_HOME = Path(r"C:\Users\14\AppData\Local\Programs\Python\Python314")
 
 
@@ -107,6 +108,8 @@ build_exe_options = {
         (str(ASSETS / "settings_brand.png"), "assets/settings_brand.png"),
         (str(ASSETS / "github_brand_light.png"), "assets/github_brand_light.png"),
         (str(ASSETS / "github_brand_dark.png"), "assets/github_brand_dark.png"),
+        (str(TOOLS / "7zr.exe"), "tools/7zr.exe"),
+        (str(TOOLS / "7zip.LICENSE.txt"), "tools/7zip.LICENSE.txt"),
     ],
     "include_msvcr": False,
     "optimize": 0,
@@ -125,7 +128,7 @@ executables = [
 
 setup(
     name="Comfy Portal",
-    version="1.1.1",
+    version="1.1.2",
     description="ComfyUI launcher and tunnel manager",
     options={"build_exe": build_exe_options},
     executables=executables,

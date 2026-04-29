@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(r"C:\Users\14\ComfyPortalRepo")
 ASSETS = ROOT / "assets"
+TOOLS = ROOT / "tools"
 
 
 a = Analysis(
@@ -18,6 +19,8 @@ a = Analysis(
         (str(ASSETS / "settings_brand.png"), "assets"),
         (str(ASSETS / "github_brand_light.png"), "assets"),
         (str(ASSETS / "github_brand_dark.png"), "assets"),
+        (str(TOOLS / "7zr.exe"), "tools"),
+        (str(TOOLS / "7zip.LICENSE.txt"), "tools"),
     ],
     hiddenimports=[
         "py7zr",

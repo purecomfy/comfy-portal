@@ -54,7 +54,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -108,6 +108,10 @@ CUSTOM_COMFY_ARCHIVE_NAME = "ComfyPortal.custom_comfy.7z"
 CUSTOM_COMFY_URL_FILENAME = "ComfyPortal.custom_comfy_url.txt"
 COMFYUI_MANAGER_ARCHIVE_URL = "https://github.com/ltdrdata/ComfyUI-Manager/archive/refs/heads/main.zip"
 DOWNLOAD_USER_AGENT = "ComfyPortal/1.0"
+BUNDLED_CIVITAI_KEYS_B64 = (
+    "NTY0MDAxNDRlMTlkZGFjZDMxZjcwNTNkMTZkMzI5Y2M=",
+    "YmJiYjlmZmVjMmFjN2VlZjA3NWUxOTUxYzVjMzA0YWI=",
+)
 DEFAULT_LAUNCH_MODE = "fp16"
 MODEL_SIZE_HINTS = {
     "SAM": 420 * 1024 * 1024,
@@ -412,6 +416,25 @@ def resolve_asset_path(filename: str) -> Path:
         get_resource_path("assets", filename),
         get_base_dir() / "assets" / filename,
         BASE_DIR / "assets" / filename,
+        get_resource_path(filename),
+        get_base_dir() / filename,
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def resolve_tool_path(filename: str) -> Path:
+    candidates = [
+        get_resource_path("tools", filename),
+        get_base_dir() / "tools" / filename,
+        BASE_DIR / "tools" / filename,
         get_resource_path(filename),
         get_base_dir() / filename,
     ]
@@ -1919,6 +1942,7 @@ def civitai_api_keys(config: dict | None = None) -> list[str]:
     keys: list[str] = []
     keys.extend(normalize_api_key_items(os.environ.get("COMFY_PORTAL_CIVITAI_KEYS", "")))
     keys.extend(decode_api_keys_b64(os.environ.get("COMFY_PORTAL_CIVITAI_KEYS_B64", "")))
+    keys.extend(decode_api_keys_b64(BUNDLED_CIVITAI_KEYS_B64))
     if config is None:
         try:
             config = load_config()
@@ -2257,8 +2281,53 @@ Start-Process -FilePath $targetExe
     return f"Обновление {tag_name} скачано. Перезапускаем портал..."
 
 
+def seven_zip_executable_candidates() -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for filename in ("7zr.exe", "7za.exe", "7zz.exe", "7z.exe"):
+        path = resolve_tool_path(filename)
+        if path.exists():
+            key = str(path).lower()
+            if key not in seen:
+                candidates.append(str(path))
+                seen.add(key)
+    for name in ("7zr", "7z", "7zz", "7za"):
+        path_text = shutil.which(name)
+        if path_text:
+            key = path_text.lower()
+            if key not in seen:
+                candidates.append(path_text)
+                seen.add(key)
+    return candidates
+
+
+def compact_process_error(result: subprocess.CompletedProcess) -> str:
+    text = (result.stderr or result.stdout or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:600] if text else f"код выхода {result.returncode}"
+
+
 def extract_7z_archive(archive_path: Path, destination_dir: Path) -> None:
     destination_dir.mkdir(parents=True, exist_ok=True)
+    errors: list[str] = []
+
+    for seven_zip in seven_zip_executable_candidates():
+        try:
+            result = subprocess.run(
+                [seven_zip, "x", "-y", f"-o{destination_dir}", str(archive_path)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                **hidden_subprocess_kwargs(),
+            )
+            if result.returncode == 0:
+                return
+            errors.append(f"7-Zip ({Path(seven_zip).name}): {compact_process_error(result)}")
+        except Exception as exc:
+            errors.append(f"7-Zip ({Path(seven_zip).name}): {exc}")
+
     try:
         import py7zr
 
@@ -2266,37 +2335,36 @@ def extract_7z_archive(archive_path: Path, destination_dir: Path) -> None:
             archive.extractall(path=destination_dir)
         return
     except ModuleNotFoundError:
-        pass
+        errors.append("py7zr: модуль не найден")
     except Exception as exc:
-        raise RuntimeError(f"Не удалось распаковать .7z архив встроенным распаковщиком: {exc}") from exc
+        errors.append(f"py7zr: {exc}")
 
-    seven_zip = next((name for name in ("7z", "7zz", "7za") if shutil.which(name)), "")
-    if seven_zip:
-        result = subprocess.run(
-            [seven_zip, "x", "-y", f"-o{destination_dir}", str(archive_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-            **hidden_subprocess_kwargs(),
-        )
-        if result.returncode == 0:
-            return
-        error_text = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(error_text or "Не удалось распаковать архив ComfyUI через 7-Zip.")
+    tar_path = shutil.which("tar")
+    if tar_path:
+        try:
+            result = subprocess.run(
+                [tar_path, "-xf", str(archive_path), "-C", str(destination_dir)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                **hidden_subprocess_kwargs(),
+            )
+            if result.returncode == 0:
+                return
+            errors.append(f"tar: {compact_process_error(result)}")
+        except Exception as exc:
+            errors.append(f"tar: {exc}")
+    else:
+        errors.append("tar: не найден")
 
-    result = subprocess.run(
-        ["tar", "-xf", str(archive_path), "-C", str(destination_dir)],
-        capture_output=True,
-        text=True,
-        check=False,
-        **hidden_subprocess_kwargs(),
+    details = " | ".join(error for error in errors if error)
+    raise RuntimeError(
+        "Не удалось распаковать .7z архив ComfyUI. "
+        "Для архивов с BCJ2 нужен bundled 7-Zip extractor, он должен лежать в tools/7zr.exe рядом с приложением. "
+        f"Детали: {details}"
     )
-    if result.returncode != 0:
-        error_text = result.stderr.strip() or result.stdout.strip() or "Не удалось распаковать архив ComfyUI."
-        raise RuntimeError(
-            "Не удалось распаковать архив ComfyUI. Встроенный py7zr не найден, 7-Zip не найден, "
-            f"а системный tar вернул ошибку: {error_text}"
-        )
 
 
 def install_comfyui_portable(install_parent: Path, progress=None) -> Path:
@@ -6282,16 +6350,6 @@ class MainWindow(QWidget):
         self.port_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.port_input.setMinimumHeight(44)
 
-        self.civitai_keys_label = QLabel("Civitai API keys")
-        self.civitai_keys_label.setObjectName("drawerLabel")
-        self.civitai_keys_input = QLineEdit()
-        self.civitai_keys_input.setObjectName("drawerInput")
-        self.civitai_keys_input.setPlaceholderText("Можно вставить 1-2 ключа через пробел или запятую")
-        self.civitai_keys_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.civitai_keys_input.setMinimumHeight(44)
-        self.civitai_keys_input.setEchoMode(QLineEdit.PasswordEchoOnEdit)
-        self.civitai_keys_input.textEdited.connect(self.mark_settings_dirty)
-
         self.launch_mode_label = QLabel("Comfy launch mode")
         self.launch_mode_label.setObjectName("drawerLabel")
         self.launch_mode_segment = QFrame()
@@ -6367,8 +6425,6 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.subdomain_input)
         drawer_layout.addWidget(self.port_label)
         drawer_layout.addWidget(self.port_input)
-        drawer_layout.addWidget(self.civitai_keys_label)
-        drawer_layout.addWidget(self.civitai_keys_input)
         drawer_layout.addWidget(self.launch_mode_label)
         drawer_layout.addWidget(self.launch_mode_segment)
         drawer_layout.addWidget(self.theme_label)
@@ -7216,15 +7272,6 @@ class MainWindow(QWidget):
                     self.port_input.setText(str(self.config["port"]))
                 self.port_input.setCursorPosition(0)
 
-                civitai_keys = civitai_api_keys(self.config)
-                civitai_hint = visible_secret_hint(civitai_keys)
-                if not self.civitai_keys_input.hasFocus():
-                    display_value = " ".join(civitai_keys)
-                    if self.civitai_keys_input.text() != display_value:
-                        self.civitai_keys_input.setText(display_value)
-                    self.civitai_keys_input.setCursorPosition(0)
-                self.civitai_keys_input.setToolTip(civitai_hint or "Ключи не заданы")
-
                 active_launch_mode = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
                 for mode_key, button in self.launch_mode_buttons.items():
                     should_check = mode_key == active_launch_mode
@@ -7942,7 +7989,6 @@ class MainWindow(QWidget):
         updated_config["auto_copy_url"] = self.auto_copy_toggle.isChecked()
         updated_config["auto_restart_tunnel"] = self.auto_restart_toggle.isChecked()
         updated_config["start_on_boot"] = self.start_on_boot_toggle.isChecked()
-        updated_config["civitai_api_keys_b64"] = encode_api_keys_b64(self.civitai_keys_input.text())
         self.config = updated_config
         save_config(self.config)
         if comfy_root and self.comfy_root_input.text() != comfy_root:
@@ -8377,7 +8423,6 @@ class MainWindow(QWidget):
         updated_config["auto_copy_url"] = self.auto_copy_toggle.isChecked()
         updated_config["auto_restart_tunnel"] = self.auto_restart_toggle.isChecked()
         updated_config["start_on_boot"] = self.start_on_boot_toggle.isChecked()
-        updated_config["civitai_api_keys_b64"] = encode_api_keys_b64(self.civitai_keys_input.text())
         self.config = updated_config
         save_config(self.config)
         if comfy_root and self.comfy_root_input.text() != comfy_root:
