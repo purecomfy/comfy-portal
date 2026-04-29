@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import locale
 import os
@@ -19,7 +20,7 @@ import ctypes
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 try:
     import winreg
@@ -53,7 +54,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -437,6 +438,7 @@ def default_config() -> dict:
         "auto_restart_tunnel": True,
         "start_on_boot": False,
         "comfy_root": "",
+        "civitai_api_keys_b64": [],
     }
 
 
@@ -472,6 +474,73 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(payload, encoding="utf-8")
 
 
+def normalize_secret_token(value: object) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(value or "").strip())
+
+
+def encode_secret_b64(value: str) -> str:
+    token = normalize_secret_token(value)
+    return base64.b64encode(token.encode("utf-8")).decode("ascii") if token else ""
+
+
+def decode_secret_b64(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return normalize_secret_token(base64.b64decode(raw.encode("ascii"), validate=True).decode("utf-8"))
+    except Exception:
+        return ""
+
+
+def normalize_api_key_items(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = re.split(r"[\s,;]+", str(value))
+    keys: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        token = normalize_secret_token(item)
+        if len(token) < 16 or token in seen:
+            continue
+        keys.append(token)
+        seen.add(token)
+    return keys
+
+
+def encode_api_keys_b64(keys: object) -> list[str]:
+    return [encoded for encoded in (encode_secret_b64(key) for key in normalize_api_key_items(keys)) if encoded]
+
+
+def decode_api_keys_b64(values: object) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple, set)):
+        items = values
+    else:
+        items = re.split(r"[\s,;]+", str(values))
+    keys: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        token = decode_secret_b64(item)
+        if len(token) < 16 or token in seen:
+            continue
+        keys.append(token)
+        seen.add(token)
+    return keys
+
+
+def visible_secret_hint(keys: list[str]) -> str:
+    return ", ".join(f"{key[:4]}...{key[-4:]}" for key in keys if len(key) >= 8)
+
+
+def secret_list_stamp(values: object) -> str:
+    return "|".join(str(value or "").strip() for value in (values if isinstance(values, (list, tuple, set)) else [values]) if str(value or "").strip())
+
+
 def acquire_single_instance() -> bool:
     global SINGLE_INSTANCE_MUTEX
     if os.name != "nt" or KERNEL32 is None:
@@ -493,6 +562,9 @@ def load_config() -> dict:
     config = default_config()
     existing_raw = read_json(CONFIG_PATH, {})
     config.update(existing_raw)
+    legacy_keys = normalize_api_key_items(existing_raw.get("civitai_api_key", "")) + normalize_api_key_items(existing_raw.get("civitai_api_keys", ""))
+    stored_keys = decode_api_keys_b64(existing_raw.get("civitai_api_keys_b64", []))
+    config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys)
     config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
     if "onboarding_completed" not in existing_raw:
@@ -501,13 +573,17 @@ def load_config() -> dict:
         config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
     config.pop("smooth_animations", None)
     config.pop("civitai_api_key", None)
+    config.pop("civitai_api_keys", None)
     return config
 
 
 def save_config(config: dict) -> None:
     config = dict(config)
     config.pop("smooth_animations", None)
-    config.pop("civitai_api_key", None)
+    legacy_keys = normalize_api_key_items(config.pop("civitai_api_key", ""))
+    stored_keys = decode_api_keys_b64(config.get("civitai_api_keys_b64", []))
+    raw_keys = normalize_api_key_items(config.pop("civitai_api_keys", ""))
+    config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys + raw_keys)
     config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
     config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
@@ -1302,6 +1378,26 @@ def node_install_path(root: Path, spec: dict) -> Path:
     return root / "ComfyUI" / "custom_nodes" / spec["folder"]
 
 
+def node_is_installed(root: Path | None, spec: dict) -> bool:
+    if not root:
+        return False
+    path = node_install_path(root, spec)
+    try:
+        return path.is_dir() and any(path.iterdir())
+    except Exception:
+        return False
+
+
+def manager_is_installed(root: Path | None) -> bool:
+    if not root:
+        return False
+    path = root / "ComfyUI" / "custom_nodes" / "comfyui-manager"
+    try:
+        return path.is_dir() and any(path.iterdir())
+    except Exception:
+        return False
+
+
 def starter_model_target_dir(root: Path, spec: dict) -> Path:
     return root.joinpath(*spec["relative_dir"])
 
@@ -1458,7 +1554,7 @@ def collect_node_states(root: Path | None) -> list[dict]:
                 "folder": spec["folder"],
                 "repo": spec["repo"],
                 "path": str(target) if target else "",
-                "ready": bool(target and target.exists()),
+                "ready": bool(root and node_is_installed(root, spec)),
             }
         )
     return states
@@ -1512,6 +1608,7 @@ def setup_status_cache_key(config: dict | None = None) -> str:
             str(source.get("source_root", "")),
             str(source.get("archive_path", "")),
             str(source.get("url", "")),
+            secret_list_stamp(config.get("civitai_api_keys_b64", [])),
             setup_presence_stamp(root),
         ]
     )
@@ -1525,7 +1622,7 @@ def comfy_setup_status(config: dict | None = None) -> dict:
     root_text = str(root_path) if root_path else ""
     source = resolve_comfy_package_source()
     workflow_specs, unresolved_workflow_nodes, workflow_files = workflow_required_node_specs()
-    manager_ready = bool(root and (root / "ComfyUI" / "custom_nodes" / "comfyui-manager").exists())
+    manager_ready = manager_is_installed(root)
     model_states = []
     for spec in STARTER_MODEL_SPECS:
         target = starter_model_target_path(root, spec) if root else None
@@ -1612,6 +1709,37 @@ def comfy_core_missing_count(status: dict) -> int:
 
 def comfy_nodes_missing_count(status: dict) -> int:
     return sum(1 for item in status.get("nodes", []) if not item.get("ready"))
+
+
+def missing_setup_titles(status: dict, include_nodes: bool = True) -> list[str]:
+    missing: list[str] = []
+    if not status.get("comfy_ready"):
+        missing.append("Portable ComfyUI")
+    if not status.get("manager_ready"):
+        missing.append("ComfyUI Manager")
+    missing.extend(str(item.get("title", "model")) for item in status.get("models", []) if not item.get("ready"))
+    if include_nodes:
+        missing.extend(str(item.get("title", "node")) for item in status.get("nodes", []) if not item.get("ready"))
+    return missing
+
+
+def assert_setup_verified(config: dict | None = None, include_nodes: bool = True) -> dict:
+    invalidate_setup_status_cache()
+    status = cached_comfy_setup_status(config or load_config(), force=True)
+    missing = missing_setup_titles(status, include_nodes=include_nodes)
+    if missing:
+        preview = ", ".join(missing[:6])
+        extra = f" и еще {len(missing) - 6}" if len(missing) > 6 else ""
+        raise RuntimeError(f"Установка завершилась не полностью. Не найдено: {preview}{extra}.")
+    return status
+
+
+def assert_nodes_verified(root: Path) -> None:
+    missing = [spec["title"] for spec in pending_node_specs(root)]
+    if missing:
+        preview = ", ".join(missing[:6])
+        extra = f" и еще {len(missing) - 6}" if len(missing) > 6 else ""
+        raise RuntimeError(f"Установка nodes завершилась не полностью. Не найдено: {preview}{extra}.")
 
 
 def estimate_setup_eta(status: dict) -> str:
@@ -1761,12 +1889,91 @@ def format_bytes(num_bytes: float) -> str:
 
 
 def starter_model_request(spec: dict, config: dict | None = None) -> tuple[str, dict[str, str], str]:
+    requests = starter_model_requests(spec, config)
+    return requests[0]
+
+
+def civitai_auth_required_message() -> str:
+    return "Civitai требует вход/API key: прямая ссылка закрыта для публичной загрузки."
+
+
+def is_civitai_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "civitai.com" in host or "civitai.red" in host
+
+
+CIVITAI_KEY_ROTATION = {"index": 0}
+
+
+def append_civitai_token(url: str, token: str) -> str:
+    clean_token = normalize_secret_token(token)
+    if not clean_token:
+        return url
+    parsed = urlparse(url)
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key.lower() != "token"]
+    query.append(("token", clean_token))
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def civitai_api_keys(config: dict | None = None) -> list[str]:
+    keys: list[str] = []
+    keys.extend(normalize_api_key_items(os.environ.get("COMFY_PORTAL_CIVITAI_KEYS", "")))
+    keys.extend(decode_api_keys_b64(os.environ.get("COMFY_PORTAL_CIVITAI_KEYS_B64", "")))
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            config = {}
+    keys.extend(decode_api_keys_b64((config or {}).get("civitai_api_keys_b64", [])))
+    keys.extend(normalize_api_key_items((config or {}).get("civitai_api_keys", "")))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        if key and key not in seen:
+            deduped.append(key)
+            seen.add(key)
+    return deduped
+
+
+def rotated_civitai_keys(config: dict | None = None) -> list[str]:
+    keys = civitai_api_keys(config)
+    if len(keys) <= 1:
+        return keys
+    start = int(CIVITAI_KEY_ROTATION.get("index", 0) or 0) % len(keys)
+    CIVITAI_KEY_ROTATION["index"] = (start + 1) % len(keys)
+    return keys[start:] + keys[:start]
+
+
+def civitai_headers(token: str) -> dict[str, str]:
+    clean_token = normalize_secret_token(token)
+    return {"Authorization": f"Bearer {clean_token}"} if clean_token else {}
+
+
+def civitai_request_variants(url: str, config: dict | None = None) -> list[tuple[str, dict[str, str]]]:
     headers = {"User-Agent": DOWNLOAD_USER_AGENT}
-    return str(spec["url"]), headers, str(spec.get("filename", ""))
+    if not is_civitai_url(url):
+        return [(url, headers)]
+    variants: list[tuple[str, dict[str, str]]] = []
+    for token in rotated_civitai_keys(config):
+        variants.append((append_civitai_token(url, token), {**headers, **civitai_headers(token)}))
+    if not variants:
+        variants.append((url, headers))
+    return variants
+
+
+def starter_model_requests(spec: dict, config: dict | None = None) -> list[tuple[str, dict[str, str], str]]:
+    filename = str(spec.get("filename", ""))
+    return [(url, headers, filename) for url, headers in civitai_request_variants(str(spec["url"]), config)]
+
+
+def is_civitai_auth_redirect(location: str | None) -> bool:
+    if not location:
+        return False
+    lower = location.lower()
+    return "/login" in lower or "download-auth" in lower or "returnurl=%2fmodel-versions" in lower
 
 
 def check_direct_download_url(url: str) -> tuple[bool, str]:
-    headers = {"User-Agent": DOWNLOAD_USER_AGENT}
     host = urlparse(url).netloc.lower()
 
     class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1774,18 +1981,19 @@ def check_direct_download_url(url: str) -> tuple[bool, str]:
             return None
 
     opener = urllib.request.build_opener(NoRedirect)
-    attempts: list[tuple[str, dict[str, str]]] = []
-    if "civitai.com" in host or "civitai.red" in host:
-        attempts.append(("GET", {**headers, "Range": "bytes=0-0"}))
-    else:
-        attempts.append(("HEAD", headers))
-        attempts.append(("GET", {**headers, "Range": "bytes=0-0"}))
-
+    attempts: list[tuple[str, str, dict[str, str]]] = []
+    for request_url, headers in civitai_request_variants(url):
+        if "civitai.com" in host or "civitai.red" in host:
+            attempts.append((request_url, "GET", {**headers, "Range": "bytes=0-0"}))
+        else:
+            attempts.append((request_url, "HEAD", headers))
+            attempts.append((request_url, "GET", {**headers, "Range": "bytes=0-0"}))
     last_status: int | None = None
     transient_failure = False
-    for method, request_headers in attempts:
+    auth_failure = False
+    for request_url, method, request_headers in attempts:
         try:
-            request = urllib.request.Request(url, headers=request_headers, method=method)
+            request = urllib.request.Request(request_url, headers=request_headers, method=method)
             with opener.open(request, timeout=DOWNLOAD_LINK_TIMEOUT) as response:
                 status_code = int(getattr(response, "status", response.getcode()) or 200)
                 if 200 <= status_code < 400:
@@ -1794,7 +2002,13 @@ def check_direct_download_url(url: str) -> tuple[bool, str]:
             status_code = int(getattr(exc, "code", 0) or 0)
             last_status = status_code or last_status
             if 300 <= status_code < 400:
+                if is_civitai_auth_redirect(exc.headers.get("Location")):
+                    auth_failure = True
+                    continue
                 return True, "Ссылка доступна."
+            if is_civitai_url(url) and status_code in {401, 403}:
+                auth_failure = True
+                continue
             if status_code == 405 and method == "HEAD":
                 continue
             return False, f"Сейчас скачать нельзя: сервер отвечает {status_code}."
@@ -1809,6 +2023,8 @@ def check_direct_download_url(url: str) -> tuple[bool, str]:
             if any(token in reason_text for token in ("timed out", "timeout", "handshake", "temporary")):
                 transient_failure = True
             continue
+    if auth_failure:
+        return False, civitai_auth_required_message()
     if last_status is not None:
         return False, f"Сейчас скачать нельзя: сервер отвечает {last_status}."
     if transient_failure:
@@ -1821,7 +2037,7 @@ def cached_direct_download_status(spec: dict, force: bool = False) -> dict[str, 
     if not url:
         return {"available": False, "message": "Сейчас скачать нельзя: ссылка не задана.", "checked": True}
     cache_items = DOWNLOAD_LINK_STATUS_CACHE["items"]
-    cache_key = f"{spec.get('title', '')}|{url}"
+    cache_key = f"{spec.get('title', '')}|{url}|{secret_list_stamp(load_config().get('civitai_api_keys_b64', [])) if is_civitai_url(url) else ''}"
     cached = cache_items.get(cache_key)
     now = time.monotonic()
     if cached and not force and (now - float(cached.get("at", 0.0))) < DOWNLOAD_LINK_CACHE_TTL:
@@ -1860,6 +2076,10 @@ def download_file(url: str, destination: Path, progress_cb=None, status_cb=None,
         try:
             with urllib.request.urlopen(request, timeout=90) as response:
                 response_status = int(getattr(response, "status", response.getcode()) or 200)
+                final_url = str(response.geturl() or "")
+                content_type = str(response.headers.get("Content-Type") or "").lower()
+                if is_civitai_url(url) and (is_civitai_auth_redirect(final_url) or "text/html" in content_type):
+                    raise RuntimeError(civitai_auth_required_message())
                 content_length = int(response.headers.get("Content-Length") or 0)
                 if existing_size > 0 and response_status != 206:
                     try:
@@ -1891,7 +2111,31 @@ def download_file(url: str, destination: Path, progress_cb=None, status_cb=None,
                     progress_cb(downloaded, total, rate)
                 transient_errors = 0
                 break
+        except urllib.error.HTTPError as exc:
+            status_code = int(getattr(exc, "code", 0) or 0)
+            if is_civitai_url(url) and (status_code in {401, 403} or is_civitai_auth_redirect(exc.headers.get("Location"))):
+                raise RuntimeError(civitai_auth_required_message()) from exc
+            if progress_cb:
+                current_total = temp_path.stat().st_size if temp_path.exists() else 0
+                progress_cb(current_total, current_total or 0, 0.0)
+            network_down = not internet_is_available(force=True)
+            if network_down:
+                wait_for_internet_restore(status_cb=status_cb)
+                continue
+            error_text = str(exc)
+            if error_looks_network_related(error_text) and transient_errors < 8:
+                transient_errors += 1
+                if status_cb:
+                    try:
+                        status_cb("Сеть дернулась. Пробуем продолжить загрузку...")
+                    except Exception:
+                        pass
+                time.sleep(min(3.0 + transient_errors, 10.0))
+                continue
+            raise RuntimeError(f"Не удалось скачать файл: {exc}") from exc
         except Exception as exc:
+            if is_civitai_url(url) and civitai_auth_required_message() in str(exc):
+                raise RuntimeError(civitai_auth_required_message()) from exc
             if progress_cb:
                 current_total = temp_path.stat().st_size if temp_path.exists() else 0
                 progress_cb(current_total, current_total or 0, 0.0)
@@ -2149,10 +2393,12 @@ def install_comfyui_portable(install_parent: Path, progress=None) -> Path:
 
 def install_comfyui_manager(root: Path, progress=None) -> str:
     manager_dir = root / "ComfyUI" / "custom_nodes" / "comfyui-manager"
-    if manager_dir.exists():
+    if manager_is_installed(root):
         if progress:
             progress(1.0, "ComfyUI Manager уже установлен", build_setup_progress_meta("manager", "done", 100, "Manager уже на месте"))
         return "Manager уже установлен."
+    if manager_dir.exists():
+        shutil.rmtree(manager_dir, ignore_errors=True)
 
     manager_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="comfyportal_manager_") as temp_dir:
@@ -2196,9 +2442,12 @@ def install_comfyui_manager(root: Path, progress=None) -> str:
         if not extracted_root:
             raise RuntimeError("Не удалось распаковать ComfyUI Manager.")
         shutil.copytree(extracted_root, manager_dir)
+    if not manager_is_installed(root):
+        raise RuntimeError("ComfyUI Manager установлен, но проверка не нашла файлы manager.")
+    invalidate_setup_status_cache()
     if progress:
-        progress(1.0, "ComfyUI Manager установлен", build_setup_progress_meta("manager", "done", 100, "Готово"))
-    return "Manager установлен."
+        progress(1.0, "ComfyUI Manager установлен", build_setup_progress_meta("manager", "done", 100, "Manager проверен"))
+    return "Manager установлен и проверен."
 
 
 def pending_starter_model_specs(root: Path | None, specs: list[dict] | tuple[dict, ...] | None = None) -> list[dict]:
@@ -2221,7 +2470,7 @@ def pending_node_specs(root: Path | None, specs: list[dict] | tuple[dict, ...] |
         return specs_to_check
     pending: list[dict] = []
     for spec in specs_to_check:
-        if not node_install_path(root, spec).exists():
+        if not node_is_installed(root, spec):
             pending.append(spec)
     return pending
 
@@ -2253,43 +2502,73 @@ def install_starter_models(root: Path, progress=None, specs: list[dict] | tuple[
             if progress:
                 progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "Ссылка недоступна"))
             continue
-        download_url, request_headers, resolved_filename = starter_model_request(spec, config)
-        if resolved_filename and target_filename != resolved_filename:
-            target_filename = resolved_filename
-            target_path = target_dir / target_filename
+        request_variants = starter_model_requests(spec, config)
         if progress:
             progress((index - 1) / total_count, f"Скачиваем {spec['title']}", build_setup_progress_meta(row_key, "prepare", 0, "Подготовка"))
-        download_file(
-            download_url,
-            target_path,
-            progress_cb=(
-                None
-                if not progress
-                else lambda downloaded, total, rate, current_index=index: progress(
-                    ((current_index - 1) + (downloaded / total if total else 0.0)) / total_count,
-                    f"Скачиваем {spec['title']}",
-                    build_setup_progress_meta(
-                        row_key,
-                        "download",
-                        100 * (downloaded / total if total else 0.0),
-                        f"{format_bytes(rate)}/s" + (f" • {format_bytes(downloaded)} / {format_bytes(total)}" if total else ""),
+        last_error = ""
+        for attempt_index, (download_url, request_headers, resolved_filename) in enumerate(request_variants, start=1):
+            if resolved_filename and target_filename != resolved_filename:
+                target_filename = resolved_filename
+                target_path = target_dir / target_filename
+            try:
+                download_file(
+                    download_url,
+                    target_path,
+                    progress_cb=(
+                        None
+                        if not progress
+                        else lambda downloaded, total, rate, current_index=index: progress(
+                            ((current_index - 1) + (downloaded / total if total else 0.0)) / total_count,
+                            f"Скачиваем {spec['title']}",
+                            build_setup_progress_meta(
+                                row_key,
+                                "download",
+                                100 * (downloaded / total if total else 0.0),
+                                f"{format_bytes(rate)}/s" + (f" • {format_bytes(downloaded)} / {format_bytes(total)}" if total else ""),
+                            ),
+                        )
                     ),
+                    status_cb=(
+                        None
+                        if not progress
+                        else lambda text, spec_title=spec["title"], current_index=index: progress(
+                            ((current_index - 1) + 0.01) / total_count,
+                            f"Скачиваем {spec_title}",
+                            build_setup_progress_meta(row_key, "download", None, text),
+                        )
+                    ),
+                    request_headers=request_headers,
                 )
-            ),
-            status_cb=(
-                None
-                if not progress
-                else lambda text, spec_title=spec["title"], current_index=index: progress(
-                    ((current_index - 1) + 0.01) / total_count,
-                    f"Скачиваем {spec_title}",
-                    build_setup_progress_meta(row_key, "download", None, text),
-                )
-            ),
-            request_headers=request_headers,
-        )
-        results.append(f"{spec['title']} скачан")
+                break
+            except RuntimeError as exc:
+                last_error = str(exc)
+                try:
+                    target_path.unlink()
+                except FileNotFoundError:
+                    pass
+                if attempt_index < len(request_variants) and civitai_auth_required_message() in last_error:
+                    if progress:
+                        progress(
+                            ((index - 1) + 0.02) / total_count,
+                            f"Пробуем другой Civitai key для {spec['title']}",
+                            build_setup_progress_meta(row_key, "download", None, "Civitai key не подошел, переключаемся"),
+                        )
+                    continue
+                raise
+        else:
+            raise RuntimeError(last_error or f"Не удалось скачать {spec['title']}.")
         if progress:
-            progress(index / total_count, f"{spec['title']} готов", build_setup_progress_meta(row_key, "done", 100, "Готово"))
+            progress(
+                ((index - 1) + 0.98) / total_count,
+                f"Проверяем {spec['title']}",
+                build_setup_progress_meta(row_key, "verify", 98, "Проверяем файл на диске"),
+            )
+        if not starter_model_exists(root, spec):
+            raise RuntimeError(f"{spec['title']} скачан, но проверка не нашла файл в нужной папке.")
+        invalidate_setup_status_cache()
+        results.append(f"{spec['title']} скачан и проверен")
+        if progress:
+            progress(index / total_count, f"{spec['title']} готов", build_setup_progress_meta(row_key, "done", 100, "Файл проверен"))
     return results
 
 
@@ -2306,11 +2585,13 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
     for index, spec in enumerate(specs_to_install, start=1):
         row_key = f"node:{spec['folder']}"
         target_dir = node_install_path(root, spec)
-        if target_dir.exists():
+        if node_is_installed(root, spec):
             results.append(f"{spec['title']} уже установлен")
             if progress:
                 progress(index / total_count, f"{spec['title']} уже установлен", build_setup_progress_meta(row_key, "done", 100, "Нода уже установлена"))
             continue
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
         if progress:
             progress((index - 1) / total_count, f"Клонируем {spec['title']}", build_setup_progress_meta(row_key, "clone", None, "git clone"))
         run_hidden_process_with_retries(
@@ -2347,9 +2628,18 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
                     )
                 ),
             )
+        if progress:
+            progress(
+                (index - 1 + 0.96) / total_count,
+                f"Проверяем {spec['title']}",
+                build_setup_progress_meta(row_key, "verify", 98, "Проверяем папку ноды"),
+            )
+        if not node_is_installed(root, spec):
+            raise RuntimeError(f"{spec['title']} установлен, но проверка не нашла папку ноды.")
+        invalidate_setup_status_cache()
         results.append(f"{spec['title']} установлен")
         if progress:
-            progress(index / total_count, f"{spec['title']} установлен", build_setup_progress_meta(row_key, "done", 100, "Готово"))
+            progress(index / total_count, f"{spec['title']} установлен", build_setup_progress_meta(row_key, "done", 100, "Нода проверена"))
     return results
 
 
@@ -2427,7 +2717,7 @@ def install_comfy_setup(install_parent: Path | None = None, progress=None) -> st
     else:
         messages.append("Ноды workflow уже на месте.")
 
-    invalidate_setup_status_cache()
+    assert_setup_verified(include_nodes=True)
     return " ".join(messages)
 
 
@@ -2485,7 +2775,7 @@ def install_comfy_core_setup(install_parent: Path | None = None, progress=None) 
     else:
         messages.append("Все файлы для Comfy уже на месте.")
 
-    invalidate_setup_status_cache()
+    assert_setup_verified(include_nodes=False)
     return " ".join(messages)
 
 
@@ -2503,6 +2793,7 @@ def install_nodes_setup(progress=None) -> str:
         progress=lambda fraction, detail, meta="": progress(detail, int(max(0, min(100, round(fraction * 100)))), meta) if progress else None,
         specs=missing_node_specs_list,
     )
+    assert_nodes_verified(root)
     invalidate_setup_status_cache()
     return " ".join(messages)
 
@@ -4460,7 +4751,31 @@ class ComfyGuideDialog(QDialog):
         row_meta_text = str(payload.get("meta_text", "") or "")
         raw_row_percent = payload.get("row_percent")
         row_percent = None if raw_row_percent is None else int(max(0, min(100, int(raw_row_percent))))
-        self.set_row_progress(row_key, row_percent, row_meta_text)
+        stage = str(payload.get("stage", "") or "").strip().lower()
+        if row_key and stage in {"done", "error"}:
+            row = self.status_rows.get(row_key)
+            if row:
+                ready = stage == "done"
+                progress_bar = row.get("progress")
+                progress_meta = row.get("progress_meta")
+                badge = row.get("badge")
+                detail_label = row.get("detail")
+                if isinstance(progress_bar, QProgressBar):
+                    progress_bar.setVisible(False)
+                    progress_bar.setValue(0)
+                if isinstance(progress_meta, QLabel):
+                    progress_meta.setVisible(False)
+                    progress_meta.setText("")
+                if isinstance(detail_label, QLabel):
+                    detail_label.setText(row_meta_text or ("Проверено" if ready else "Ошибка установки"))
+                if isinstance(badge, QPushButton):
+                    badge.setText("Установлено" if ready else "Ошибка")
+                    badge.setProperty("ready", ready)
+                    badge.setEnabled(False)
+                    badge.style().unpolish(badge)
+                    badge.style().polish(badge)
+        else:
+            self.set_row_progress(row_key, row_percent, row_meta_text)
         clamped_percent = max(0, min(100, int(percent)))
         if self.install_progress.maximum() != 100:
             self.install_progress.setRange(0, 100)
@@ -5203,11 +5518,17 @@ class ComfySetupPage(QWidget):
         row_meta = str(payload.get("meta_text", "") or meta)
         raw_row_percent = payload.get("row_percent")
         row_percent = None if raw_row_percent is None else int(max(0, min(100, int(raw_row_percent))))
+        stage = str(payload.get("stage", "") or "").strip().lower()
         if row_key:
             self.clear_row_progress(keep_key=row_key)
             row = self.status_rows.get(row_key)
             if row:
-                row.set_progress(row_percent, row_meta)
+                if stage == "done":
+                    row.set_state(True, row_meta or "Проверено.", "ready")
+                elif stage == "error":
+                    row.set_state(False, row_meta or "Ошибка установки.", "unavailable")
+                else:
+                    row.set_progress(row_percent, row_meta)
         else:
             self.clear_row_progress()
         target.set_progress(percent, detail, row_meta or meta, True)
@@ -5961,6 +6282,16 @@ class MainWindow(QWidget):
         self.port_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.port_input.setMinimumHeight(44)
 
+        self.civitai_keys_label = QLabel("Civitai API keys")
+        self.civitai_keys_label.setObjectName("drawerLabel")
+        self.civitai_keys_input = QLineEdit()
+        self.civitai_keys_input.setObjectName("drawerInput")
+        self.civitai_keys_input.setPlaceholderText("Можно вставить 1-2 ключа через пробел или запятую")
+        self.civitai_keys_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.civitai_keys_input.setMinimumHeight(44)
+        self.civitai_keys_input.setEchoMode(QLineEdit.PasswordEchoOnEdit)
+        self.civitai_keys_input.textEdited.connect(self.mark_settings_dirty)
+
         self.launch_mode_label = QLabel("Comfy launch mode")
         self.launch_mode_label.setObjectName("drawerLabel")
         self.launch_mode_segment = QFrame()
@@ -6036,6 +6367,8 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.subdomain_input)
         drawer_layout.addWidget(self.port_label)
         drawer_layout.addWidget(self.port_input)
+        drawer_layout.addWidget(self.civitai_keys_label)
+        drawer_layout.addWidget(self.civitai_keys_input)
         drawer_layout.addWidget(self.launch_mode_label)
         drawer_layout.addWidget(self.launch_mode_segment)
         drawer_layout.addWidget(self.theme_label)
@@ -6883,6 +7216,15 @@ class MainWindow(QWidget):
                     self.port_input.setText(str(self.config["port"]))
                 self.port_input.setCursorPosition(0)
 
+                civitai_keys = civitai_api_keys(self.config)
+                civitai_hint = visible_secret_hint(civitai_keys)
+                if not self.civitai_keys_input.hasFocus():
+                    display_value = " ".join(civitai_keys)
+                    if self.civitai_keys_input.text() != display_value:
+                        self.civitai_keys_input.setText(display_value)
+                    self.civitai_keys_input.setCursorPosition(0)
+                self.civitai_keys_input.setToolTip(civitai_hint or "Ключи не заданы")
+
                 active_launch_mode = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
                 for mode_key, button in self.launch_mode_buttons.items():
                     should_check = mode_key == active_launch_mode
@@ -7600,6 +7942,7 @@ class MainWindow(QWidget):
         updated_config["auto_copy_url"] = self.auto_copy_toggle.isChecked()
         updated_config["auto_restart_tunnel"] = self.auto_restart_toggle.isChecked()
         updated_config["start_on_boot"] = self.start_on_boot_toggle.isChecked()
+        updated_config["civitai_api_keys_b64"] = encode_api_keys_b64(self.civitai_keys_input.text())
         self.config = updated_config
         save_config(self.config)
         if comfy_root and self.comfy_root_input.text() != comfy_root:
@@ -7863,10 +8206,16 @@ class MainWindow(QWidget):
             row_meta = str(payload.get("meta_text", "") or meta)
             raw_row_percent = payload.get("row_percent")
             row_percent = None if raw_row_percent is None else int(max(0, min(100, int(raw_row_percent))))
+            stage = str(payload.get("stage", "") or "").strip().lower()
             if row_key:
                 for current_key, row in self.onboarding_install_rows.items():
                     if current_key == row_key:
-                        row.set_progress(row_percent, row_meta)
+                        if stage == "done":
+                            row.set_state(True, row_meta or "Проверено.", "ready")
+                        elif stage == "error":
+                            row.set_state(False, row_meta or "Ошибка установки.", "unavailable")
+                        else:
+                            row.set_progress(row_percent, row_meta)
                     else:
                         row.clear_progress()
             else:
@@ -8028,6 +8377,7 @@ class MainWindow(QWidget):
         updated_config["auto_copy_url"] = self.auto_copy_toggle.isChecked()
         updated_config["auto_restart_tunnel"] = self.auto_restart_toggle.isChecked()
         updated_config["start_on_boot"] = self.start_on_boot_toggle.isChecked()
+        updated_config["civitai_api_keys_b64"] = encode_api_keys_b64(self.civitai_keys_input.text())
         self.config = updated_config
         save_config(self.config)
         if comfy_root and self.comfy_root_input.text() != comfy_root:
