@@ -54,7 +54,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -1938,6 +1938,24 @@ def append_civitai_token(url: str, token: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
+def civitai_url_mirrors(url: str) -> list[str]:
+    if not is_civitai_url(url):
+        return [url]
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    mirrors = [url]
+    alternate_host = ""
+    if "civitai.red" in host:
+        alternate_host = parsed.netloc.replace("civitai.red", "civitai.com")
+    elif "civitai.com" in host:
+        alternate_host = parsed.netloc.replace("civitai.com", "civitai.red")
+    if alternate_host:
+        alternate_url = urlunparse(parsed._replace(netloc=alternate_host))
+        if alternate_url not in mirrors:
+            mirrors.append(alternate_url)
+    return mirrors
+
+
 def civitai_api_keys(config: dict | None = None) -> list[str]:
     keys: list[str] = []
     keys.extend(normalize_api_key_items(os.environ.get("COMFY_PORTAL_CIVITAI_KEYS", "")))
@@ -1978,10 +1996,11 @@ def civitai_request_variants(url: str, config: dict | None = None) -> list[tuple
     if not is_civitai_url(url):
         return [(url, headers)]
     variants: list[tuple[str, dict[str, str]]] = []
-    for token in rotated_civitai_keys(config):
-        variants.append((append_civitai_token(url, token), {**headers, **civitai_headers(token)}))
+    for mirror_url in civitai_url_mirrors(url):
+        for token in rotated_civitai_keys(config):
+            variants.append((append_civitai_token(mirror_url, token), {**headers, **civitai_headers(token)}))
     if not variants:
-        variants.append((url, headers))
+        variants.extend((mirror_url, headers) for mirror_url in civitai_url_mirrors(url))
     return variants
 
 
@@ -2032,6 +2051,9 @@ def check_direct_download_url(url: str) -> tuple[bool, str]:
                 return True, "Ссылка доступна."
             if is_civitai_url(url) and status_code in {401, 403}:
                 auth_failure = True
+                continue
+            if is_civitai_url(url) and 500 <= status_code < 600:
+                transient_failure = True
                 continue
             if status_code == 405 and method == "HEAD":
                 continue
