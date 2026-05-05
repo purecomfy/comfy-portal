@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (
 
 APP_NAME = "Comfy Portal"
 APP_VERSION = "1.1.6"
-APP_USER_MODEL_ID = "Mofko.ComfyPortal"
+APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
 GITHUB_REPO_URL = "https://github.com/purecomfy/comfy-portal"
