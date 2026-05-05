@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -116,7 +116,8 @@ BUNDLED_CIVITAI_KEYS_B64 = (
     "YmJiYjlmZmVjMmFjN2VlZjA3NWUxOTUxYzVjMzA0YWI=",
 )
 DEFAULT_LAUNCH_MODE = "fp16"
-DEFAULT_EXTRA_LAUNCH_ARGS = "--disable-dynamic-vram"
+DEFAULT_EXTRA_LAUNCH_ARGS = "--disable-dynamic-vram --log-stdout"
+REQUIRED_COMFY_ARGS = ("--log-stdout",)
 MODEL_SIZE_HINTS = {
     "SAM": 420 * 1024 * 1024,
     "RealESRGAN x2": 70 * 1024 * 1024,
@@ -532,7 +533,10 @@ DISCOVER_COMFY_CACHE = {"at": 0.0, "path": None, "anchor": ""}
 PUBLIC_TUNNEL_STATUS_CACHE = {"items": {}}
 UPDATE_RELEASE_CACHE = {"at": 0.0, "info": None}
 COMFY_RELEASE_CACHE = {"at": 0.0, "info": None}
+COMFY_LOG_CANDIDATE_CACHE = {"at": 0.0, "root": "", "paths": []}
 COMFY_LAUNCH_LOCK = threading.Lock()
+DOWNLOAD_CANCEL_EVENT = threading.Event()
+DOWNLOAD_PAUSE_EVENT = threading.Event()
 NETWORK_ERROR_HINTS = (
     "connection reset",
     "connection aborted",
@@ -817,6 +821,9 @@ def comfy_launch_command(root: Path, config: dict | None = None) -> list[str]:
     for extra_arg in parse_extra_launch_args(config.get("extra_launch_args", "")):
         if extra_arg not in args:
             args.append(extra_arg)
+    for required_arg in REQUIRED_COMFY_ARGS:
+        if required_arg not in args:
+            args.append(required_arg)
     return [
         str(root / "python_embeded" / "python.exe"),
         "-s",
@@ -2056,8 +2063,6 @@ def comfy_core_missing_count(status: dict) -> int:
     count = 0
     if not status.get("comfy_ready"):
         count += 1
-    elif status.get("comfy_update_available"):
-        count += 1
     if not status.get("manager_ready"):
         count += 1
     count += sum(1 for item in status.get("models", []) if not item.get("ready"))
@@ -2072,8 +2077,6 @@ def missing_setup_titles(status: dict, include_nodes: bool = True) -> list[str]:
     missing: list[str] = []
     if not status.get("comfy_ready"):
         missing.append("Portable ComfyUI")
-    elif status.get("comfy_update_available"):
-        missing.append("Обновление ComfyUI")
     if not status.get("manager_ready"):
         missing.append("ComfyUI Manager")
     missing.extend(str(item.get("title", "model")) for item in status.get("models", []) if not item.get("ready"))
@@ -2445,12 +2448,44 @@ def refresh_setup_download_links(config: dict | None = None) -> None:
         cached_direct_download_status(spec, force=True)
 
 
+def reset_download_controls() -> None:
+    DOWNLOAD_CANCEL_EVENT.clear()
+    DOWNLOAD_PAUSE_EVENT.clear()
+
+
+def request_download_cancel() -> None:
+    DOWNLOAD_CANCEL_EVENT.set()
+    DOWNLOAD_PAUSE_EVENT.clear()
+
+
+def set_download_paused(paused: bool) -> None:
+    if paused:
+        DOWNLOAD_PAUSE_EVENT.set()
+    else:
+        DOWNLOAD_PAUSE_EVENT.clear()
+
+
+def check_download_control(status_cb=None) -> None:
+    if DOWNLOAD_CANCEL_EVENT.is_set():
+        raise RuntimeError("Загрузка отменена.")
+    if DOWNLOAD_PAUSE_EVENT.is_set() and status_cb:
+        try:
+            status_cb("Загрузка на паузе.")
+        except Exception:
+            pass
+    while DOWNLOAD_PAUSE_EVENT.is_set():
+        if DOWNLOAD_CANCEL_EVENT.is_set():
+            raise RuntimeError("Загрузка отменена.")
+        time.sleep(0.25)
+
+
 def download_file(url: str, destination: Path, progress_cb=None, status_cb=None, request_headers: dict[str, str] | None = None) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_path = destination.with_suffix(destination.suffix + ".part")
     started_at = time.monotonic()
     transient_errors = 0
     while True:
+        check_download_control(status_cb)
         existing_size = temp_path.stat().st_size if temp_path.exists() else 0
         headers = {"User-Agent": DOWNLOAD_USER_AGENT}
         if request_headers:
@@ -2480,6 +2515,7 @@ def download_file(url: str, destination: Path, progress_cb=None, status_cb=None,
                 downloaded = existing_size
                 with temp_path.open(mode) as handle:
                     while True:
+                        check_download_control(status_cb)
                         chunk = response.read(DOWNLOAD_CHUNK_SIZE)
                         if not chunk:
                             break
@@ -3245,7 +3281,7 @@ def install_comfy_setup(install_parent: Path | None = None, progress=None) -> st
         missing_node_specs_list = pending_node_specs(root, missing_node_specs_list)
     elif update_available:
         root = install_comfyui_portable(root.parent, progress=lambda fraction, detail, meta="": emit(1, fraction, detail, meta), force_update=True)
-        messages.append("ComfyUI обновлена до latest-сборки.")
+        messages.append("ComfyUI обновлена.")
         completed_units += 1
         missing_model_specs = pending_starter_model_specs(root, missing_model_specs)
         missing_node_specs_list = pending_node_specs(root, missing_node_specs_list)
@@ -3291,11 +3327,11 @@ def install_comfy_setup(install_parent: Path | None = None, progress=None) -> st
     return " ".join(messages)
 
 
-def install_comfy_core_setup(install_parent: Path | None = None, progress=None) -> str:
+def install_comfy_core_setup(install_parent: Path | None = None, progress=None, force_update: bool = False) -> str:
     root = current_comfy_root()
     messages: list[str] = []
     status = cached_comfy_setup_status(force=True)
-    update_available = bool(root and status.get("comfy_update_available"))
+    update_available = bool(root and (force_update or status.get("comfy_update_available")))
     manager_missing = not status.get("manager_ready")
     missing_model_specs = pending_starter_model_specs(root)
     total_units = (1 if (not root or update_available) else 0) + (1 if manager_missing else 0) + len(missing_model_specs)
@@ -3323,7 +3359,7 @@ def install_comfy_core_setup(install_parent: Path | None = None, progress=None) 
         missing_model_specs = pending_starter_model_specs(root, missing_model_specs)
     elif update_available:
         root = install_comfyui_portable(root.parent, progress=lambda fraction, detail, meta="": emit(1, fraction, detail, meta), force_update=True)
-        messages.append("ComfyUI обновлена до latest-сборки.")
+        messages.append("ComfyUI обновлена.")
         completed_units += 1
         missing_model_specs = pending_starter_model_specs(root, missing_model_specs)
     else:
@@ -3734,7 +3770,43 @@ def tail_text(path: Path, lines: int = 4) -> str:
     return "\n".join(read_text_tail(path, max_bytes=8192).splitlines()[-lines:])
 
 
-def combined_comfy_log_text(max_bytes: int = 65536) -> str:
+def comfy_internal_log_candidates(root: Path | None) -> list[Path]:
+    if not root:
+        return []
+    root = Path(root)
+    cache_key = str(root).lower()
+    now = time.monotonic()
+    if COMFY_LOG_CANDIDATE_CACHE["root"] == cache_key and now - float(COMFY_LOG_CANDIDATE_CACHE["at"]) < 5.0:
+        return [Path(path) for path in COMFY_LOG_CANDIDATE_CACHE.get("paths", [])]
+    fixed = [
+        root / "ComfyUI" / "user" / "logs" / "comfyui.log",
+        root / "ComfyUI" / "user" / "default" / "comfyui.log",
+        root / "ComfyUI" / "logs" / "comfyui.log",
+        root / "ComfyUI" / "comfyui.log",
+        root / "comfyui.log",
+    ]
+    found: dict[str, Path] = {}
+    for path in fixed:
+        if path.exists():
+            found[str(path.resolve()).lower()] = path
+    for folder in (root / "ComfyUI" / "user", root / "ComfyUI" / "logs", root / "ComfyUI"):
+        if not folder.exists():
+            continue
+        try:
+            logs = sorted(folder.rglob("*.log"), key=lambda item: item.stat().st_mtime, reverse=True)[:8]
+        except Exception:
+            logs = []
+        for path in logs:
+            try:
+                found[str(path.resolve()).lower()] = path
+            except Exception:
+                found[str(path).lower()] = path
+    result = list(found.values())
+    COMFY_LOG_CANDIDATE_CACHE.update({"at": now, "root": cache_key, "paths": [str(path) for path in result]})
+    return result
+
+
+def combined_comfy_log_text(max_bytes: int = 65536, root: Path | None = None) -> str:
     parts: list[str] = []
     stdout_text = read_text_tail(COMFY_OUT, max_bytes=max_bytes // 2)
     stderr_text = read_text_tail(COMFY_ERR, max_bytes=max_bytes // 2)
@@ -3742,6 +3814,10 @@ def combined_comfy_log_text(max_bytes: int = 65536) -> str:
         parts.append("[stdout]\n" + stdout_text.strip())
     if stderr_text.strip():
         parts.append("[stderr]\n" + stderr_text.strip())
+    for path in comfy_internal_log_candidates(root):
+        text = read_text_tail(path, max_bytes=max(8192, max_bytes // 3)).strip()
+        if text:
+            parts.append(f"[{path.name}]\n{text}")
     return "\n\n".join(parts).strip()
 
 
@@ -3886,12 +3962,16 @@ def start_comfy_if_needed() -> str:
         clear_logs(COMFY_OUT, COMFY_ERR)
         out = open(COMFY_OUT, "w", encoding="utf-8")
         err = open(COMFY_ERR, "w", encoding="utf-8")
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         try:
             proc = subprocess.Popen(
                 comfy_launch_command(comfy_root, config),
                 cwd=str(comfy_root),
                 stdout=out,
                 stderr=err,
+                env=env,
                 shell=False,
                 **hidden_subprocess_kwargs(new_process_group=True),
             )
@@ -4184,6 +4264,7 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
     config = load_config()
     state = load_state()
     comfy_root = normalize_root_path(config.get("comfy_root", ""))
+    comfy_root_path = coerce_comfy_root(comfy_root) if include_logs else None
     internet_ok = internet_is_available()
     comfy_active = any_comfy_process(state)
     if not comfy_active and port_is_open(config["port"]):
@@ -4322,7 +4403,7 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         "tunnel_error": tunnel_error,
         "logs": {
             "comfy": (tail_text(COMFY_ERR) or tail_text(COMFY_OUT)) if include_logs else "",
-            "comfy_full": combined_comfy_log_text() if include_logs else "",
+            "comfy_full": combined_comfy_log_text(root=comfy_root_path) if include_logs else "",
             "tunnel": (tail_text(TUNNEL_ERR) or tail_text(TUNNEL_OUT)) if include_logs else "",
             "friend": "\n".join(aggregated_friend_logs),
         },
@@ -5616,6 +5697,11 @@ class SetupStatusRow(QFrame):
             bg = "rgba(34, 197, 94, 0.12)"
             fg = self.theme.green
             border = "rgba(34, 197, 94, 0.24)"
+        elif state_kind == "update":
+            text = "Обновление"
+            bg = "rgba(59, 130, 246, 0.12)"
+            fg = self.theme.blue
+            border = "rgba(59, 130, 246, 0.28)"
         elif state_kind == "unavailable":
             text = "Недоступно"
             bg = "rgba(250, 204, 21, 0.12)"
@@ -5657,6 +5743,8 @@ class SetupStatusRow(QFrame):
 
 class SetupSectionCard(QFrame):
     action_requested = Signal(str)
+    pause_requested = Signal(str)
+    cancel_requested = Signal(str)
 
     def __init__(self, key: str, title: str, action_text: str, theme: Theme):
         super().__init__()
@@ -5712,6 +5800,22 @@ class SetupSectionCard(QFrame):
         progress_layout.addWidget(self.progress_detail)
         progress_layout.addWidget(self.progress_meta)
         progress_layout.addWidget(self.progress)
+        control_layout = QHBoxLayout()
+        control_layout.setSpacing(8)
+        control_layout.addStretch(1)
+        self.pause_button = QPushButton("Пауза")
+        self.pause_button.setObjectName("setupPauseButton")
+        self.pause_button.setCursor(Qt.PointingHandCursor)
+        self.pause_button.setFixedHeight(34)
+        self.pause_button.clicked.connect(lambda: self.pause_requested.emit(self.key))
+        self.cancel_button = QPushButton("Отмена")
+        self.cancel_button.setObjectName("setupCancelButton")
+        self.cancel_button.setCursor(Qt.PointingHandCursor)
+        self.cancel_button.setFixedHeight(34)
+        self.cancel_button.clicked.connect(lambda: self.cancel_requested.emit(self.key))
+        control_layout.addWidget(self.pause_button)
+        control_layout.addWidget(self.cancel_button)
+        progress_layout.addLayout(control_layout)
         self.progress_shell.setVisible(False)
 
         self.body = QWidget()
@@ -5762,6 +5866,9 @@ class SetupSectionCard(QFrame):
             self.progress.setRange(0, 100)
             self.progress.setValue(max(0, min(100, int(percent))))
 
+    def set_paused(self, paused: bool) -> None:
+        self.pause_button.setText("Продолжить" if paused else "Пауза")
+
     def clear_progress(self) -> None:
         self.progress_shell.setVisible(False)
         self.progress.setRange(0, 100)
@@ -5808,6 +5915,21 @@ class SetupSectionCard(QFrame):
             QProgressBar#setupSectionProgress::chunk {{
                 background: {theme.blue};
                 border-radius: 999px;
+            }}
+            QPushButton#setupPauseButton, QPushButton#setupCancelButton {{
+                background: {theme.soft_btn};
+                color: {theme.text};
+                border: 1px solid {theme.border};
+                border-radius: 16px;
+                padding: 0px 14px;
+                font-size: 12px;
+                font-weight: 800;
+            }}
+            QPushButton#setupPauseButton:hover, QPushButton#setupCancelButton:hover {{
+                background: {theme.soft_btn_hover};
+            }}
+            QPushButton#setupCancelButton {{
+                color: {theme.red};
             }}
             """
         )
@@ -5890,6 +6012,8 @@ class LaunchChoiceDialog(QDialog):
 
 class ComfySetupPage(QWidget):
     install_requested = Signal(str)
+    pause_requested = Signal(str)
+    cancel_requested = Signal(str)
     back_requested = Signal()
 
     def __init__(self, theme: Theme, status: dict, parent: QWidget | None = None):
@@ -5974,6 +6098,10 @@ class ComfySetupPage(QWidget):
         self.nodes_section = SetupSectionCard("nodes", "Ноды", "Установить ноды", theme)
         self.comfy_section.action_requested.connect(self.install_requested.emit)
         self.nodes_section.action_requested.connect(self.install_requested.emit)
+        self.comfy_section.pause_requested.connect(self.pause_requested.emit)
+        self.nodes_section.pause_requested.connect(self.pause_requested.emit)
+        self.comfy_section.cancel_requested.connect(self.cancel_requested.emit)
+        self.nodes_section.cancel_requested.connect(self.cancel_requested.emit)
 
         self.status_rows["comfy"] = SetupStatusRow("Portable ComfyUI", theme)
         self.status_rows["manager"] = SetupStatusRow("ComfyUI Manager", theme)
@@ -6075,7 +6203,7 @@ class ComfySetupPage(QWidget):
         else:
             self.folder_label.setText("Папка пока не выбрана")
         if comfy_ready and status.get("comfy_update_available"):
-            self.status_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Доступно обновление ComfyUI."), "missing")
+            self.status_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Есть необязательное обновление ComfyUI."), "update")
         else:
             self.status_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
         self.status_rows["manager"].set_state(
@@ -6110,7 +6238,10 @@ class ComfySetupPage(QWidget):
 
         comfy_missing = comfy_core_missing_count(status)
         nodes_missing = comfy_nodes_missing_count(status)
-        self.comfy_section.set_summary("Все для Comfy уже готово." if comfy_missing == 0 else f"Нужно доставить компонентов: {comfy_missing}.")
+        if comfy_missing == 0 and comfy_ready and status.get("comfy_update_available"):
+            self.comfy_section.set_summary("Comfy готов. Обновление доступно, но ставить его не обязательно.")
+        else:
+            self.comfy_section.set_summary("Все для Comfy уже готово." if comfy_missing == 0 else f"Нужно доставить компонентов: {comfy_missing}.")
         if not comfy_ready and nodes_missing:
             self.nodes_section.set_summary("Сначала поставь Comfy, потом можно добавлять ноды.")
         else:
@@ -6118,8 +6249,13 @@ class ComfySetupPage(QWidget):
         if self.active_scope == "comfy":
             self.comfy_section.set_action_state("Установка...", False, True)
         else:
-            comfy_action = "Обновить Comfy" if status.get("comfy_update_available") else "Установить Comfy"
-            self.comfy_section.set_action_state(comfy_action if comfy_missing else "Все установлено", comfy_missing > 0 and self.active_scope != "nodes", False)
+            update_available = bool(comfy_ready and status.get("comfy_update_available"))
+            comfy_action = "Обновить Comfy" if update_available and comfy_missing == 0 else "Установить Comfy"
+            self.comfy_section.set_action_state(
+                comfy_action if (comfy_missing or update_available) else "Все установлено",
+                (comfy_missing > 0 or update_available) and self.active_scope != "nodes",
+                False,
+            )
         if self.active_scope == "nodes":
             self.nodes_section.set_action_state("Установка...", False, True)
         else:
@@ -6143,8 +6279,15 @@ class ComfySetupPage(QWidget):
         self.active_scope = scope
         target = self.comfy_section if scope == "comfy" else self.nodes_section
         target.set_progress(0, "Подготавливаем установку.", f"Примерное время: {eta_text}", True)
+        target.set_paused(False)
         target.set_action_state("Установка...", False, True)
         self.refresh_status(cached_comfy_setup_status(force=True))
+
+    def set_install_paused(self, paused: bool) -> None:
+        if self.active_scope == "comfy":
+            self.comfy_section.set_paused(paused)
+        elif self.active_scope == "nodes":
+            self.nodes_section.set_paused(paused)
 
     def update_install_progress(self, scope: str, detail: str, percent: int, meta: str = "") -> None:
         target = self.comfy_section if scope == "comfy" else self.nodes_section
@@ -6215,6 +6358,7 @@ class MainWindow(QWidget):
         self.overlay_animation_count = 0
         self.install_setup_inflight = False
         self.install_setup_paused_poll = False
+        self.install_setup_download_paused = False
         self.install_setup_eta = ""
         self.install_setup_progress_percent = 0
         self.install_setup_progress_detail = ""
@@ -6597,6 +6741,8 @@ class MainWindow(QWidget):
         self.setup_page = ComfySetupPage(self.theme, cached_comfy_setup_status(self.config), self)
         self.setup_page_widget = self.setup_page
         self.setup_page.install_requested.connect(self.start_setup_install)
+        self.setup_page.pause_requested.connect(self.toggle_setup_install_pause)
+        self.setup_page.cancel_requested.connect(self.cancel_setup_install)
         self.setup_page.back_requested.connect(lambda: self.set_setup_view_open(False))
         self.page_stack.addWidget(self.setup_page)
 
@@ -6729,6 +6875,8 @@ class MainWindow(QWidget):
         onboarding_status = cached_comfy_setup_status(self.config)
         self.onboarding_install_section = SetupSectionCard("comfy", "Установка Comfy", "Установка...", self.theme)
         self.onboarding_install_section.action_button.hide()
+        self.onboarding_install_section.pause_requested.connect(self.toggle_setup_install_pause)
+        self.onboarding_install_section.cancel_requested.connect(self.cancel_setup_install)
         self.onboarding_install_section.set_collapsed(True)
         self.onboarding_install_rows["comfy"] = SetupStatusRow("Portable ComfyUI", self.theme)
         self.onboarding_install_rows["manager"] = SetupStatusRow("ComfyUI Manager", self.theme)
@@ -8184,7 +8332,7 @@ class MainWindow(QWidget):
 
         def worker() -> None:
             try:
-                viewer_text = combined_comfy_log_text(max_bytes=98304).strip() or "Логи ComfyUI появятся здесь после запуска."
+                viewer_text = combined_comfy_log_text(max_bytes=98304, root=current_comfy_root(load_config())).strip() or "Логи ComfyUI появятся здесь после запуска."
                 QTimer.singleShot(0, lambda text=viewer_text: self.on_logs_fast_ready(text))
             except Exception:
                 QTimer.singleShot(0, lambda: self.on_logs_fast_ready("Логи ComfyUI появятся здесь после запуска."))
@@ -8319,7 +8467,7 @@ class MainWindow(QWidget):
 
     def open_github_releases(self) -> None:
         if self.update_banner_kind == "comfy":
-            target = str((self.release_info or {}).get("html_url", "") or COMFY_GITHUB_REPO_URL)
+            target = str((self.release_info or {}).get("portable_url", "") or COMFYUI_PORTABLE_URL)
         else:
             target = str((self.release_info or {}).get("html_url", "") or GITHUB_RELEASES_URL)
         QDesktopServices.openUrl(QUrl(target))
@@ -8329,7 +8477,7 @@ class MainWindow(QWidget):
         manager_ready = bool(status.get("manager_ready"))
         if "comfy" in self.onboarding_install_rows:
             if comfy_ready and status.get("comfy_update_available"):
-                self.onboarding_install_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Доступно обновление ComfyUI."), "missing")
+                self.onboarding_install_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Есть необязательное обновление ComfyUI."), "update")
             else:
                 self.onboarding_install_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
         if "manager" in self.onboarding_install_rows:
@@ -8352,7 +8500,10 @@ class MainWindow(QWidget):
                 row.set_state(False, "Сначала нужен portable ComfyUI.", "missing")
             else:
                 row.set_state(False, "Будет скачан и положен в нужную папку.", "missing")
-        summary = "Все для Comfy уже готово." if comfy_core_missing_count(status) == 0 else f"Не хватает {comfy_core_missing_count(status)} компонентов для полного setup."
+        if comfy_ready and status.get("comfy_update_available") and comfy_core_missing_count(status) == 0:
+            summary = "Comfy готов. Обновление можно поставить позже."
+        else:
+            summary = "Все для Comfy уже готово." if comfy_core_missing_count(status) == 0 else f"Нужно доставить компонентов: {comfy_core_missing_count(status)}."
         self.onboarding_install_section.set_summary(summary)
         if not self.install_setup_inflight:
             self.onboarding_install_section.clear_progress()
@@ -8445,6 +8596,8 @@ class MainWindow(QWidget):
             return
         install_parent = Path(chosen)
         self.onboarding_install_target_parent = install_parent
+        reset_download_controls()
+        self.install_setup_download_paused = False
         self.install_setup_inflight = True
         self.install_setup_scope = "comfy"
         self.install_setup_paused_poll = self.poll_timer.isActive()
@@ -8459,6 +8612,7 @@ class MainWindow(QWidget):
         self.install_setup_last_error = False
         self.onboarding_install_section.set_collapsed(False)
         self.onboarding_install_section.set_progress(0, "Подготавливаем установку.", f"Примерное время: {self.install_setup_eta}", True)
+        self.onboarding_install_section.set_paused(False)
         self.onboarding_install_start_button.setEnabled(False)
         self.onboarding_install_start_button.setText("Установка...")
         self.update_install_button()
@@ -8562,11 +8716,13 @@ class MainWindow(QWidget):
         version_text = str(info.get("tag_name", "") or "").strip()
         if self.update_banner_kind == "comfy":
             self.update_banner_title.setText(f"Доступна ComfyUI {version_text}" if version_text else "Доступно обновление ComfyUI")
-            self.update_banner_subtitle.setText(str(info.get("message", "") or "Можно обновить ComfyUI до latest-сборки. Models, custom_nodes и output сохраняются."))
+            self.update_banner_subtitle.setText(str(info.get("message", "") or "Можно обновить ComfyUI, когда будет удобно. Models, custom_nodes и output сохраняются."))
+            self.update_banner_view_button.setText("Скачать вручную")
             self.update_banner_install_button.setText("Обновить Comfy")
         else:
             self.update_banner_title.setText(f"Доступно обновление {version_text}" if version_text else "Доступно обновление")
             self.update_banner_subtitle.setText("На GitHub вышел новый релиз. Можно скачать и обновить портал прямо из приложения.")
+            self.update_banner_view_button.setText("Что нового")
             self.update_banner_install_button.setText("Обновить")
         self.update_banner_install_button.setEnabled(True)
         self.update_banner.show()
@@ -8583,7 +8739,7 @@ class MainWindow(QWidget):
         if self.update_banner_kind == "comfy":
             self.update_banner.hide()
             self.set_setup_view_open(True)
-            self.start_setup_install("comfy")
+            self.start_setup_install("comfy", force_comfy_update=True)
             return
         self.update_download_inflight = True
         self.update_banner_install_button.setEnabled(False)
@@ -8596,9 +8752,29 @@ class MainWindow(QWidget):
     def start_comfy_setup_install(self) -> None:
         self.start_setup_install("comfy")
 
-    def start_setup_install(self, scope: str) -> None:
+    def toggle_setup_install_pause(self, _scope: str = "") -> None:
+        if not self.install_setup_inflight:
+            return
+        self.install_setup_download_paused = not self.install_setup_download_paused
+        set_download_paused(self.install_setup_download_paused)
+        if self.setup_page_widget is not None:
+            self.setup_page_widget.set_install_paused(self.install_setup_download_paused)
+        self.show_toast("Загрузка на паузе." if self.install_setup_download_paused else "Загрузка продолжается.")
+
+    def cancel_setup_install(self, _scope: str = "") -> None:
+        if not self.install_setup_inflight:
+            return
+        self.install_setup_download_paused = False
+        request_download_cancel()
+        if self.setup_page_widget is not None:
+            self.setup_page_widget.set_install_paused(False)
+        self.show_toast("Останавливаем загрузку...", True)
+
+    def start_setup_install(self, scope: str, force_comfy_update: bool = False) -> None:
         if self.busy or self.install_setup_inflight:
             return
+        reset_download_controls()
+        self.install_setup_download_paused = False
         updated_config = dict(load_config())
         comfy_root_input = normalize_root_path(self.comfy_root_input.text())
         comfy_root = str(coerce_comfy_root(comfy_root_input) or "")
@@ -8661,7 +8837,14 @@ class MainWindow(QWidget):
                 install_parent = chosen_path
                 if self.setup_page_widget is not None:
                     self.setup_page_widget.set_install_target_path(chosen_path)
-        missing = comfy_core_has_missing(status) if scope == "comfy" else comfy_nodes_have_missing(status)
+        core_missing = comfy_core_has_missing(status)
+        update_available = bool(
+            scope == "comfy"
+            and status.get("comfy_ready")
+            and status.get("comfy_update_available")
+            and (force_comfy_update or not core_missing)
+        )
+        missing = (core_missing or update_available or force_comfy_update) if scope == "comfy" else comfy_nodes_have_missing(status)
         if not missing:
             self.install_setup_last_scope = scope
             self.install_setup_last_message = "Все уже установлено."
@@ -8674,6 +8857,7 @@ class MainWindow(QWidget):
             return
         self.install_setup_inflight = True
         self.install_setup_scope = scope
+        self.install_setup_download_paused = False
         self.install_setup_paused_poll = self.poll_timer.isActive()
         if self.install_setup_paused_poll:
             self.poll_timer.stop()
@@ -8688,7 +8872,7 @@ class MainWindow(QWidget):
         if self.setup_page_widget is not None:
             self.setup_page_widget.begin_install(scope, self.install_setup_eta)
         self.run_background(
-            (lambda progress, current_parent=install_parent: install_comfy_core_setup(current_parent, progress))
+            (lambda progress, current_parent=install_parent, force_update=force_comfy_update or update_available: install_comfy_core_setup(current_parent, progress, force_update=force_update))
             if scope == "comfy"
             else (lambda progress: install_nodes_setup(progress)),
             job_kind=f"installsetup:{scope}",
@@ -8904,6 +9088,8 @@ class MainWindow(QWidget):
             schedule_friend_retry(meta, message)
         elif kind == "installsetup":
             self.install_setup_inflight = False
+            reset_download_controls()
+            self.install_setup_download_paused = False
             should_resume_poll = self.install_setup_paused_poll
             self.install_setup_paused_poll = False
             scope = meta or self.install_setup_scope or "comfy"
