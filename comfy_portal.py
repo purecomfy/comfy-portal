@@ -99,7 +99,6 @@ TELEGRAM_BRAND_SIZE = 38
 GITHUB_BRAND_SIZE = 38
 ONBOARDING_MIN_SUBDOMAIN_LEN = 6
 ONBOARDING_STORAGE_HEADROOM_BYTES = 1024 * 1024 * 1024
-# Accept legacy 6-digit friend links and new 8-digit ones.
 FRIEND_LINK_PATTERN = re.compile(r"friendscomfy(?:\d{6}|\d{8})")
 SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9-]{3,63}$")
 SUBDOMAIN_ARG_PATTERN = re.compile(r"--subdomain\s+([a-z0-9-]+)")
@@ -914,7 +913,7 @@ def resolve_comfy_package_source() -> dict:
 
     return {
         "kind": "official_latest",
-        "label": "Официальная latest portable ComfyUI",
+        "label": "Официальная portable-сборка ComfyUI",
         "url": COMFYUI_PORTABLE_URL,
         "archive_name": COMFYUI_PORTABLE_ARCHIVE_NAME,
     }
@@ -1880,7 +1879,6 @@ def workflow_required_node_specs() -> tuple[list[dict], list[str], list[str]]:
                     continue
                 spec = mapping.get(key)
                 if not spec:
-                    # Also try suffix matches like rgthree/rgthree-comfy -> rgthree-comfy
                     tail = key.split("/")[-1]
                     spec = mapping.get(tail)
                 if spec:
@@ -2100,7 +2098,7 @@ def assert_nodes_verified(root: Path) -> None:
     if missing:
         preview = ", ".join(missing[:6])
         extra = f" и еще {len(missing) - 6}" if len(missing) > 6 else ""
-        raise RuntimeError(f"Установка nodes завершилась не полностью. Не найдено: {preview}{extra}.")
+        raise RuntimeError(f"Установка нод завершилась не полностью. Не найдено: {preview}{extra}.")
 
 
 def estimate_setup_eta(status: dict) -> str:
@@ -3126,7 +3124,7 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
     specs_to_install = pending_node_specs(root, specs)
     if not specs_to_install:
         if progress:
-            progress(1.0, "Все nodes уже установлены", "")
+            progress(1.0, "Все ноды уже установлены", "")
         return results
     total_count = len(specs_to_install)
     for index, spec in enumerate(specs_to_install, start=1):
@@ -3360,11 +3358,11 @@ def install_comfy_core_setup(install_parent: Path | None = None, progress=None) 
 def install_nodes_setup(progress=None) -> str:
     root = current_comfy_root()
     if not root:
-        raise RuntimeError("Сначала установи полный Comfy setup.")
+        raise RuntimeError("Сначала установи Comfy.")
     missing_node_specs_list = pending_node_specs(root)
     if not missing_node_specs_list:
         invalidate_setup_status_cache()
-        return "Все nodes уже установлены."
+        return "Все ноды уже установлены."
     node_units = len(missing_node_specs_list)
     messages = install_missing_nodes(
         root,
@@ -4570,7 +4568,7 @@ class ToggleSwitch(QPushButton):
         self.theme = theme
         self.update()
 
-    def paintEvent(self, event) -> None:  # type: ignore[override]
+    def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         track_rect = QRectF(1, 1, self.width() - 2, self.height() - 2)
@@ -4762,12 +4760,12 @@ class DrawerBackdrop(QWidget):
 
     alpha = Property(float, get_alpha, set_alpha)
 
-    def paintEvent(self, event) -> None:  # type: ignore[override]
+    def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0, int(round(self._alpha))))
         painter.end()
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+    def mousePressEvent(self, event) -> None:
         self.clicked.emit()
         event.accept()
 
@@ -4921,7 +4919,7 @@ class ComfyGuideDialog(QDialog):
         self._progress_meta = ""
         self.status_rows: dict[str, dict] = {}
         self.setModal(True)
-        self.setWindowTitle("Comfy setup")
+        self.setWindowTitle("Установка Comfy")
         self.resize(640, 760)
 
         layout = QVBoxLayout(self)
@@ -4944,7 +4942,7 @@ class ComfyGuideDialog(QDialog):
         title = QLabel("Comfy")
         title.setObjectName("guideTitle")
         subtitle = QLabel(
-            "Здесь собрана помощь по portable ComfyUI, Manager, стартовым моделям и нодам для workflow. "
+            "Здесь собрана помощь по portable ComfyUI, Manager, стартовым моделям и нодам для воркфлоу. "
             "Показываем, что уже готово, а что еще нужно дотянуть."
         )
         subtitle.setObjectName("guideHint")
@@ -4984,13 +4982,13 @@ class ComfyGuideDialog(QDialog):
         nodes_layout.setContentsMargins(18, 18, 18, 18)
         nodes_layout.setSpacing(12)
 
-        nodes_title = QLabel("Nodes")
+        nodes_title = QLabel("Ноды")
         nodes_title.setObjectName("guideSectionTitle")
         workflow_names = ", ".join(self.status.get("workflow_files", []))
         unresolved_names = ", ".join(self.status.get("unresolved_workflow_nodes", []))
-        nodes_hint_text = "Ноды, которые нужны этому workflow и будут доставлены в custom_nodes."
+        nodes_hint_text = "Ноды, которые нужны воркфлоу и будут доставлены в custom_nodes."
         if workflow_names:
-            nodes_hint_text += f" Workflow files: {workflow_names}."
+            nodes_hint_text += f" Файлы воркфлоу: {workflow_names}."
         if unresolved_names:
             nodes_hint_text += f" Неизвестные ноды: {unresolved_names}."
         nodes_hint = QLabel(nodes_hint_text)
@@ -5021,7 +5019,7 @@ class ComfyGuideDialog(QDialog):
             "1. Если portable ComfyUI не найден, приложение попросит папку и само скачает portable-архив.\n"
             "2. Только после этого поставит ComfyUI Manager в ComfyUI/custom_nodes/comfyui-manager.\n"
             "3. Затем доложит SAM, RealESRGAN x2, Control LoRA Canny и основную image-модель прямо в нужные model-папки.\n"
-            "4. И уже после ComfyUI установит missing nodes для твоего workflow в custom_nodes."
+            "4. В конце доставит недостающие ноды для воркфлоу в custom_nodes."
         )
         what_text.setObjectName("guideSectionBody")
         what_text.setWordWrap(True)
@@ -5920,9 +5918,9 @@ class ComfySetupPage(QWidget):
 
         title_layout = QVBoxLayout()
         title_layout.setSpacing(2)
-        self.title_label = QLabel("Comfy setup")
+        self.title_label = QLabel("Установка Comfy")
         self.title_label.setObjectName("logsTitle")
-        self.subtitle_label = QLabel("Два блока: отдельный полный setup ComfyUI и отдельный setup nodes. Каждый можно свернуть или раскрыть.")
+        self.subtitle_label = QLabel("Здесь можно поставить ComfyUI с нужными файлами или отдельно доставить ноды. Раскрой блок, чтобы увидеть детали.")
         self.subtitle_label.setObjectName("logsSubtitle")
         self.subtitle_label.setWordWrap(True)
         title_layout.addWidget(self.title_label)
@@ -5949,8 +5947,31 @@ class ComfySetupPage(QWidget):
         self.folder_label.setWordWrap(True)
         content_layout.addWidget(self.folder_label)
 
+        self.manual_card = QFrame()
+        self.manual_card.setObjectName("setupManualCard")
+        manual_layout = QHBoxLayout(self.manual_card)
+        manual_layout.setContentsMargins(16, 14, 16, 14)
+        manual_layout.setSpacing(12)
+        manual_text_layout = QVBoxLayout()
+        manual_text_layout.setSpacing(2)
+        self.manual_title = QLabel("Ручная установка")
+        self.manual_title.setObjectName("setupManualTitle")
+        self.manual_hint = QLabel("Если удобнее скачать самому, открой portable-архив, распакуй его и выбери готовую папку в настройках.")
+        self.manual_hint.setObjectName("setupManualHint")
+        self.manual_hint.setWordWrap(True)
+        manual_text_layout.addWidget(self.manual_title)
+        manual_text_layout.addWidget(self.manual_hint)
+        self.manual_download_button = QPushButton("Скачать вручную")
+        self.manual_download_button.setObjectName("setupManualButton")
+        self.manual_download_button.setCursor(Qt.PointingHandCursor)
+        self.manual_download_button.setFixedHeight(38)
+        self.manual_download_button.clicked.connect(self.open_manual_comfy_download)
+        manual_layout.addLayout(manual_text_layout, 1)
+        manual_layout.addWidget(self.manual_download_button, 0, Qt.AlignRight | Qt.AlignVCenter)
+        content_layout.addWidget(self.manual_card)
+
         self.comfy_section = SetupSectionCard("comfy", "Comfy", "Установить Comfy", theme)
-        self.nodes_section = SetupSectionCard("nodes", "Nodes", "Установить nodes", theme)
+        self.nodes_section = SetupSectionCard("nodes", "Ноды", "Установить ноды", theme)
         self.comfy_section.action_requested.connect(self.install_requested.emit)
         self.nodes_section.action_requested.connect(self.install_requested.emit)
 
@@ -5996,12 +6017,44 @@ class ComfySetupPage(QWidget):
                 border-radius: 18px;
                 padding: 12px 14px;
             }}
+            QFrame#setupManualCard {{
+                background: {self.theme.panel_bg};
+                border: 1px solid {self.theme.border};
+                border-radius: 20px;
+            }}
+            QLabel#setupManualTitle {{
+                color: {self.theme.text};
+                font-size: 14px;
+                font-weight: 800;
+                background: transparent;
+            }}
+            QLabel#setupManualHint {{
+                color: {self.theme.muted};
+                font-size: 12px;
+                background: transparent;
+            }}
+            QPushButton#setupManualButton {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.text};
+                border: 1px solid {self.theme.border};
+                border-radius: 18px;
+                padding: 0px 16px;
+                font-size: 13px;
+                font-weight: 800;
+            }}
+            QPushButton#setupManualButton:hover {{
+                background: {self.theme.soft_btn_hover};
+            }}
             """
         )
         self.comfy_section.apply_theme(self.theme)
         self.nodes_section.apply_theme(self.theme)
         for row in self.status_rows.values():
             row.apply_theme(self.theme)
+
+    def open_manual_comfy_download(self) -> None:
+        url = str(self.status.get("source_url", "") or COMFYUI_PORTABLE_URL)
+        QDesktopServices.openUrl(QUrl(url))
 
     def clear_row_progress(self, keep_key: str = "") -> None:
         for key, row in self.status_rows.items():
@@ -6057,11 +6110,11 @@ class ComfySetupPage(QWidget):
 
         comfy_missing = comfy_core_missing_count(status)
         nodes_missing = comfy_nodes_missing_count(status)
-        self.comfy_section.set_summary("Все для Comfy уже готово." if comfy_missing == 0 else f"Не хватает {comfy_missing} компонентов для полного Comfy setup.")
+        self.comfy_section.set_summary("Все для Comfy уже готово." if comfy_missing == 0 else f"Нужно доставить компонентов: {comfy_missing}.")
         if not comfy_ready and nodes_missing:
-            self.nodes_section.set_summary("Nodes ставятся только после полного Comfy setup.")
+            self.nodes_section.set_summary("Сначала поставь Comfy, потом можно добавлять ноды.")
         else:
-            self.nodes_section.set_summary("Все nodes уже стоят." if nodes_missing == 0 else f"Не хватает {nodes_missing} nodes для workflow.")
+            self.nodes_section.set_summary("Все ноды уже на месте." if nodes_missing == 0 else f"Нужно доставить нод: {nodes_missing}.")
         if self.active_scope == "comfy":
             self.comfy_section.set_action_state("Установка...", False, True)
         else:
@@ -6071,7 +6124,7 @@ class ComfySetupPage(QWidget):
             self.nodes_section.set_action_state("Установка...", False, True)
         else:
             self.nodes_section.set_action_state(
-                "Установить nodes" if nodes_missing else "Все установлено",
+                "Установить ноды" if nodes_missing else "Все установлено",
                 comfy_ready and nodes_missing > 0 and self.active_scope != "comfy",
                 False,
             )
@@ -6360,7 +6413,7 @@ class MainWindow(QWidget):
         self.install_button.setObjectName("installButton")
         self.install_button.setFixedSize(54, 52)
         self.install_button.setIconSize(QSize(24, 24))
-        self.install_button.setToolTip("Открыть Comfy setup")
+        self.install_button.setToolTip("Открыть установку Comfy")
         self.install_button.setCursor(Qt.PointingHandCursor)
         self.install_button.clicked.connect(lambda: self.set_setup_view_open(True))
         self.install_badge = QLabel("!")
@@ -6674,7 +6727,7 @@ class MainWindow(QWidget):
         self.onboarding_install_path.setWordWrap(True)
 
         onboarding_status = cached_comfy_setup_status(self.config)
-        self.onboarding_install_section = SetupSectionCard("comfy", "Comfy setup", "Installing...", self.theme)
+        self.onboarding_install_section = SetupSectionCard("comfy", "Установка Comfy", "Установка...", self.theme)
         self.onboarding_install_section.action_button.hide()
         self.onboarding_install_section.set_collapsed(True)
         self.onboarding_install_rows["comfy"] = SetupStatusRow("Portable ComfyUI", self.theme)
@@ -7687,7 +7740,7 @@ class MainWindow(QWidget):
                 f"background: {self.theme.blue}; color: white; border: none; "
                 "border-radius: 18px; padding: 0px;"
             )
-            tooltip = "Сейчас открыта страница Comfy setup"
+            tooltip = "Сейчас открыта установка Comfy"
         elif self.install_setup_inflight:
             state = "busy"
             style = (
@@ -7708,7 +7761,7 @@ class MainWindow(QWidget):
                 f"background: {self.theme.soft_btn}; color: {self.theme.text}; border: 1px solid {self.theme.border}; "
                 "border-radius: 18px; padding: 0px;"
             )
-            tooltip = "Comfy setup уже собран. Нажми, чтобы открыть help"
+            tooltip = "Comfy уже собран. Нажми, чтобы открыть установку"
         if self.install_visual_state != state:
             self.install_button.setStyleSheet(style)
             self.update_button_icons()
@@ -7825,7 +7878,7 @@ class MainWindow(QWidget):
             toggle_row.apply_theme(self.theme)
         self.update_segment_buttons()
 
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.drawer_backdrop.setGeometry(0, 0, self.width(), self.height())
         self.position_overlays()
@@ -8399,7 +8452,7 @@ class MainWindow(QWidget):
             self.poll_timer.stop()
         self.install_setup_eta = estimate_setup_eta(cached_comfy_setup_status(self.config, force=True))
         self.install_setup_progress_percent = 0
-        self.install_setup_progress_detail = "Ставим полный Comfy setup."
+        self.install_setup_progress_detail = "Ставим Comfy и нужные файлы."
         self.install_setup_progress_meta = f"Примерное время: {self.install_setup_eta}"
         self.install_setup_last_scope = "comfy"
         self.install_setup_last_message = ""
@@ -8574,7 +8627,7 @@ class MainWindow(QWidget):
             self.setup_page_widget.refresh_status(status)
         if scope == "nodes" and not status.get("comfy_ready"):
             self.install_setup_last_scope = "nodes"
-            self.install_setup_last_message = "Сначала установи полный Comfy setup, потом уже nodes."
+            self.install_setup_last_message = "Сначала установи Comfy, потом добавим ноды."
             self.install_setup_last_error = True
             if self.setup_page_widget is not None:
                 self.setup_page_widget.finish_install("nodes", self.install_setup_last_message, True)
@@ -8626,7 +8679,7 @@ class MainWindow(QWidget):
             self.poll_timer.stop()
         self.install_setup_eta = estimate_setup_eta(status)
         self.install_setup_progress_percent = 0
-        self.install_setup_progress_detail = "Ставим полный Comfy setup." if scope == "comfy" else "Ставим nodes для workflow."
+        self.install_setup_progress_detail = "Ставим Comfy и нужные файлы." if scope == "comfy" else "Ставим ноды для воркфлоу."
         self.install_setup_progress_meta = f"Примерное время: {self.install_setup_eta}"
         self.install_setup_last_scope = scope
         self.install_setup_last_message = ""
@@ -8748,8 +8801,6 @@ class MainWindow(QWidget):
                 )
                 self.action_visual_state = "busy"
             return
-        # Keep the main action in "Start" mode when only ComfyUI is already up.
-        # "Stop" should represent a live public tunnel/friend links, not the app server alone.
         should_stop = snap["tunnel_active"] or snap["friend_active"]
         if should_stop:
             if self.action_button.text() != "Stop":
