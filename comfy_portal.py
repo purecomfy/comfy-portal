@@ -1362,6 +1362,32 @@ def read_comfy_source_marker(root: Path | None) -> dict:
         return {}
 
 
+def read_comfy_version_from_files(root: Path | None) -> str:
+    if not root:
+        return ""
+    candidates = [
+        Path(root) / "ComfyUI" / "comfyui_version.py",
+        Path(root) / "ComfyUI" / "version.py",
+        Path(root) / "ComfyUI" / "pyproject.toml",
+    ]
+    patterns = (
+        r"__version__\s*=\s*['\"]([^'\"]+)['\"]",
+        r"version\s*=\s*['\"]([^'\"]+)['\"]",
+    )
+    for path in candidates:
+        try:
+            if not path.exists():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")[:65536]
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if match:
+                    return match.group(1).strip()
+        except Exception:
+            continue
+    return ""
+
+
 def write_comfy_source_marker(root: Path | None, source: dict | None = None) -> None:
     if not root:
         return
@@ -1404,7 +1430,7 @@ def comfy_update_status(root: Path | None, source: dict | None = None) -> dict[s
     latest = safe_latest_comfy_release_info(allow_network=False)
     latest_tag = str(latest.get("tag_name", "") or "")
     marker = read_comfy_source_marker(root)
-    installed_tag = str(marker.get("tag_name", "") or "")
+    installed_tag = str(marker.get("tag_name", "") or "") or read_comfy_version_from_files(root)
     latest_url = str(latest.get("portable_url", COMFYUI_PORTABLE_URL) or COMFYUI_PORTABLE_URL)
     if not latest.get("available"):
         return {
@@ -1424,8 +1450,8 @@ def comfy_update_status(root: Path | None, source: dict | None = None) -> dict[s
         }
     if not installed_tag:
         return {
-            "available": True,
-            "message": f"Версия ComfyUI неизвестна. Можно обновить до latest {latest_tag}.",
+            "available": False,
+            "message": "Версия ComfyUI не определена. Если нужно, открой ссылку и обнови вручную.",
             "installed_tag": "",
             "latest_tag": latest_tag,
             "latest_url": latest_url,
@@ -1989,6 +2015,7 @@ def comfy_setup_status(config: dict | None = None) -> dict:
             {
                 "title": spec["title"],
                 "path": str(target) if target else "",
+                "url": str(spec.get("url", "")),
                 "ready": ready,
                 "download_available": bool(link_status.get("available", False)),
                 "download_message": str(link_status.get("message", "") or ""),
@@ -1999,6 +2026,7 @@ def comfy_setup_status(config: dict | None = None) -> dict:
         "root": root_text,
         "source_label": source["label"],
         "source_kind": source["kind"],
+        "source_url": str(source.get("url", COMFYUI_PORTABLE_URL)),
         "comfy_ready": bool(root),
         "comfy_update_available": bool(update_status.get("available", False)),
         "comfy_update_message": str(update_status.get("message", "") or ""),
@@ -5621,6 +5649,7 @@ class SetupStatusRow(QFrame):
         self.theme = theme
         self.ready = False
         self.state_kind = "missing"
+        self.link_url = ""
         self.setObjectName("setupStatusRow")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -5653,8 +5682,16 @@ class SetupStatusRow(QFrame):
         self.badge.setAlignment(Qt.AlignCenter)
         self.badge.setMinimumWidth(110)
         self.badge.setFixedHeight(34)
+        self.link_button = QPushButton("Ссылка")
+        self.link_button.setObjectName("setupRowLinkButton")
+        self.link_button.setCursor(Qt.PointingHandCursor)
+        self.link_button.setMinimumWidth(82)
+        self.link_button.setFixedHeight(34)
+        self.link_button.clicked.connect(self.open_link)
+        self.link_button.hide()
 
         layout.addLayout(text_layout, 1)
+        layout.addWidget(self.link_button, 0, Qt.AlignRight | Qt.AlignVCenter)
         layout.addWidget(self.badge, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.apply_theme(theme)
 
@@ -5685,9 +5722,29 @@ class SetupStatusRow(QFrame):
                 background: {theme.blue};
                 border-radius: 999px;
             }}
+            QPushButton#setupRowLinkButton {{
+                background: {theme.soft_btn};
+                color: {theme.text};
+                border: 1px solid {theme.border};
+                border-radius: 17px;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 0px 12px;
+            }}
+            QPushButton#setupRowLinkButton:hover {{
+                background: {theme.soft_btn_hover};
+            }}
             """
         )
         self.update_badge(self.ready, self.state_kind)
+
+    def set_link(self, url: str | None) -> None:
+        self.link_url = str(url or "").strip()
+        self.link_button.setVisible(bool(self.link_url))
+
+    def open_link(self) -> None:
+        if self.link_url:
+            QDesktopServices.openUrl(QUrl(self.link_url))
 
     def update_badge(self, ready: bool, state_kind: str = "missing") -> None:
         self.ready = ready
@@ -6078,21 +6135,21 @@ class ComfySetupPage(QWidget):
         manual_layout.setSpacing(12)
         manual_text_layout = QVBoxLayout()
         manual_text_layout.setSpacing(2)
-        self.manual_title = QLabel("Ручная установка")
+        self.manual_title = QLabel("Ссылка")
         self.manual_title.setObjectName("setupManualTitle")
-        self.manual_hint = QLabel("Если удобнее скачать самому, открой portable-архив, распакуй его и выбери готовую папку в настройках.")
+        self.manual_hint = QLabel("Прямая ссылка на portable-архив ComfyUI.")
         self.manual_hint.setObjectName("setupManualHint")
         self.manual_hint.setWordWrap(True)
         manual_text_layout.addWidget(self.manual_title)
         manual_text_layout.addWidget(self.manual_hint)
-        self.manual_download_button = QPushButton("Скачать вручную")
+        self.manual_download_button = QPushButton("Ссылка")
         self.manual_download_button.setObjectName("setupManualButton")
         self.manual_download_button.setCursor(Qt.PointingHandCursor)
         self.manual_download_button.setFixedHeight(38)
         self.manual_download_button.clicked.connect(self.open_manual_comfy_download)
         manual_layout.addLayout(manual_text_layout, 1)
         manual_layout.addWidget(self.manual_download_button, 0, Qt.AlignRight | Qt.AlignVCenter)
-        content_layout.addWidget(self.manual_card)
+        self.manual_card.hide()
 
         self.comfy_section = SetupSectionCard("comfy", "Comfy", "Установить Comfy", theme)
         self.nodes_section = SetupSectionCard("nodes", "Ноды", "Установить ноды", theme)
@@ -6105,16 +6162,20 @@ class ComfySetupPage(QWidget):
 
         self.status_rows["comfy"] = SetupStatusRow("Portable ComfyUI", theme)
         self.status_rows["manager"] = SetupStatusRow("ComfyUI Manager", theme)
+        self.status_rows["comfy"].set_link(str(status.get("source_url", "") or COMFYUI_PORTABLE_URL))
+        self.status_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
         self.comfy_section.add_row(self.status_rows["comfy"])
         self.comfy_section.add_row(self.status_rows["manager"])
         for model in status.get("models", []):
             key = f"model:{model['title']}"
             row = SetupStatusRow(model["title"], theme)
+            row.set_link(str(model.get("url", "")))
             self.status_rows[key] = row
             self.comfy_section.add_row(row)
         for node in status.get("nodes", []):
             key = f"node:{node['folder']}"
             row = SetupStatusRow(node["title"], theme)
+            row.set_link(str(node.get("repo", "")))
             self.status_rows[key] = row
             self.nodes_section.add_row(row)
 
@@ -6202,6 +6263,8 @@ class ComfySetupPage(QWidget):
             self.folder_label.setText(f"Папка установки: {self.install_target_path}")
         else:
             self.folder_label.setText("Папка пока не выбрана")
+        self.status_rows["comfy"].set_link(str(status.get("source_url", "") or COMFYUI_PORTABLE_URL))
+        self.status_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
         if comfy_ready and status.get("comfy_update_available"):
             self.status_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Есть необязательное обновление ComfyUI."), "update")
         else:
@@ -6215,6 +6278,7 @@ class ComfySetupPage(QWidget):
             row = self.status_rows.get(f"model:{model['title']}")
             if not row:
                 continue
+            row.set_link(str(model.get("url", "")))
             if model.get("ready"):
                 row.set_state(True, "Файл уже на месте.", "ready")
             elif not model.get("download_checked", False):
@@ -6229,6 +6293,7 @@ class ComfySetupPage(QWidget):
             row = self.status_rows.get(f"node:{node['folder']}")
             if not row:
                 continue
+            row.set_link(str(node.get("repo", "")))
             if node.get("ready"):
                 row.set_state(True, "Нода уже установлена.", "ready")
             elif not comfy_ready:
@@ -6880,11 +6945,14 @@ class MainWindow(QWidget):
         self.onboarding_install_section.set_collapsed(True)
         self.onboarding_install_rows["comfy"] = SetupStatusRow("Portable ComfyUI", self.theme)
         self.onboarding_install_rows["manager"] = SetupStatusRow("ComfyUI Manager", self.theme)
+        self.onboarding_install_rows["comfy"].set_link(str(onboarding_status.get("source_url", "") or COMFYUI_PORTABLE_URL))
+        self.onboarding_install_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
         self.onboarding_install_section.add_row(self.onboarding_install_rows["comfy"])
         self.onboarding_install_section.add_row(self.onboarding_install_rows["manager"])
         for model in onboarding_status.get("models", []):
             key = f"model:{model['title']}"
             row = SetupStatusRow(model["title"], self.theme)
+            row.set_link(str(model.get("url", "")))
             self.onboarding_install_rows[key] = row
             self.onboarding_install_section.add_row(row)
         self.refresh_onboarding_install_rows(onboarding_status)
@@ -7792,6 +7860,9 @@ class MainWindow(QWidget):
         self.friends_visual_state = ""
         self.install_visual_state = ""
         self.update_button_icons()
+        if self.setup_page_widget is not None:
+            self.setup_page_widget.theme = self.theme
+            self.setup_page_widget.apply_theme()
         self.onboarding_install_section.apply_theme(self.theme)
         for row in self.onboarding_install_rows.values():
             row.apply_theme(self.theme)
@@ -8476,6 +8547,10 @@ class MainWindow(QWidget):
         comfy_ready = bool(status.get("comfy_ready"))
         manager_ready = bool(status.get("manager_ready"))
         if "comfy" in self.onboarding_install_rows:
+            self.onboarding_install_rows["comfy"].set_link(str(status.get("source_url", "") or COMFYUI_PORTABLE_URL))
+        if "manager" in self.onboarding_install_rows:
+            self.onboarding_install_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
+        if "comfy" in self.onboarding_install_rows:
             if comfy_ready and status.get("comfy_update_available"):
                 self.onboarding_install_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Есть необязательное обновление ComfyUI."), "update")
             else:
@@ -8490,6 +8565,7 @@ class MainWindow(QWidget):
             row = self.onboarding_install_rows.get(f"model:{model['title']}")
             if not row:
                 continue
+            row.set_link(str(model.get("url", "")))
             if model.get("ready"):
                 row.set_state(True, "Файл уже на месте.", "ready")
             elif not model.get("download_checked", False):
@@ -8717,7 +8793,7 @@ class MainWindow(QWidget):
         if self.update_banner_kind == "comfy":
             self.update_banner_title.setText(f"Доступна ComfyUI {version_text}" if version_text else "Доступно обновление ComfyUI")
             self.update_banner_subtitle.setText(str(info.get("message", "") or "Можно обновить ComfyUI, когда будет удобно. Models, custom_nodes и output сохраняются."))
-            self.update_banner_view_button.setText("Скачать вручную")
+            self.update_banner_view_button.setText("Ссылка")
             self.update_banner_install_button.setText("Обновить Comfy")
         else:
             self.update_banner_title.setText(f"Доступно обновление {version_text}" if version_text else "Доступно обновление")

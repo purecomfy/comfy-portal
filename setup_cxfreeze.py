@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 from cx_Freeze import Executable, setup
 
@@ -7,6 +8,15 @@ ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
 TOOLS = ROOT / "tools"
 PYTHON_HOME = Path(r"C:\Users\14\AppData\Local\Programs\Python\Python314")
+
+
+def build_output_dir() -> Path:
+    for index, arg in enumerate(sys.argv):
+        if arg == "--build-exe" and index + 1 < len(sys.argv):
+            return Path(sys.argv[index + 1])
+        if arg.startswith("--build-exe="):
+            return Path(arg.split("=", 1)[1])
+    return ROOT / "build" / "exe.win-amd64-3.14"
 
 
 build_exe_options = {
@@ -133,3 +143,10 @@ setup(
     options={"build_exe": build_exe_options},
     executables=executables,
 )
+
+try:
+    generated_license = build_output_dir() / "frozen_application_license.txt"
+    if generated_license.exists():
+        generated_license.unlink()
+except Exception:
+    pass
