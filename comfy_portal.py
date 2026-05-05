@@ -104,7 +104,6 @@ SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9-]{3,63}$")
 SUBDOMAIN_ARG_PATTERN = re.compile(r"--subdomain\s+([a-z0-9-]+)")
 PUBLIC_URL_PATTERN = re.compile(r"https://([a-z0-9-]+)\.loca\.lt")
 COMFYUI_PORTABLE_URL = "https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z"
-PINNED_COMFY_PACKAGE_URL = "https://github.com/mofko/ComfyUI/releases/download/FAPEPE/ComfyUI_windows_portable_nvidia.7z"
 COMFYUI_PORTABLE_ARCHIVE_NAME = "ComfyUI_windows_portable_nvidia.7z"
 COMFY_PACKAGE_MARKER_NAME = ".comfy_portal_source.json"
 CUSTOM_COMFY_ARCHIVE_NAME = "ComfyPortal.custom_comfy.7z"
