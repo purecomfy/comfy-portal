@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -135,6 +135,7 @@ MODEL_SIZE_HINTS = {
     "flux2-tiny-vae.safetensors": 350 * 1024 * 1024,
     "bbox/face_yolov8m.pt": 60 * 1024 * 1024,
     "bbox/Eyeful_v2-Paired.pt": 90 * 1024 * 1024,
+    "bbox/hand_yolov9c.pt": 50 * 1024 * 1024,
 }
 NODE_SIZE_HINT_BYTES = 220 * 1024 * 1024
 PORTABLE_SIZE_HINT_BYTES = int(1.9 * 1024 * 1024 * 1024)
@@ -272,6 +273,12 @@ STARTER_MODEL_SPECS = (
         "title": "bbox/Eyeful_v2-Paired.pt",
         "filename": "Eyeful_v2-Paired.pt",
         "url": "https://huggingface.co/MidnightRunner/Ultralytics/resolve/main/bbox/Eyeful_v2-Paired.pt?download=true",
+        "relative_dir": ("ComfyUI", "models", "ultralytics", "bbox"),
+    },
+    {
+        "title": "bbox/hand_yolov9c.pt",
+        "filename": "hand_yolov9c.pt",
+        "url": "https://huggingface.co/Bingsu/adetailer/resolve/main/hand_yolov9c.pt?download=true",
         "relative_dir": ("ComfyUI", "models", "ultralytics", "bbox"),
     },
 )
@@ -3846,7 +3853,23 @@ def combined_comfy_log_text(max_bytes: int = 65536, root: Path | None = None) ->
         text = read_text_tail(path, max_bytes=max(8192, max_bytes // 3)).strip()
         if text:
             parts.append(f"[{path.name}]\n{text}")
-    return "\n\n".join(parts).strip()
+    if parts:
+        return "\n\n".join(parts).strip()
+    comfy_pids = cached_process_scan("comfy", force=True)
+    if comfy_pids:
+        root_text = str(root) if root else str(current_comfy_root(load_config()) or "")
+        hint_lines = [
+            "[portal]",
+            "ComfyUI активен, но файл вывода пока пуст.",
+            "Если ComfyUI был запущен не через портал, старый stdout/stderr нельзя подхватить задним числом.",
+            f"PID: {', '.join(str(pid) for pid in comfy_pids)}",
+        ]
+        if root_text:
+            hint_lines.append(f"Папка: {root_text}")
+        hint_lines.append(f"stdout: {COMFY_OUT}")
+        hint_lines.append(f"stderr: {COMFY_ERR}")
+        return "\n".join(hint_lines)
+    return ""
 
 
 def summarize_error_tail(path: Path) -> str:
@@ -3993,9 +4016,17 @@ def start_comfy_if_needed() -> str:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        command = comfy_launch_command(comfy_root, config)
+        out.write(
+            "[portal]\n"
+            "Запускаем ComfyUI через Comfy Portal.\n"
+            f"Папка: {comfy_root}\n"
+            f"Команда: {' '.join(command)}\n\n"
+        )
+        out.flush()
         try:
             proc = subprocess.Popen(
-                comfy_launch_command(comfy_root, config),
+                command,
                 cwd=str(comfy_root),
                 stdout=out,
                 stderr=err,
@@ -4517,6 +4548,7 @@ class UiBridge(QObject):
     setup_status_ready = Signal(object)
     update_ready = Signal(object)
     update_failed = Signal(str)
+    logs_ready = Signal(str)
 
 
 class CardFrame(QFrame):
@@ -6397,6 +6429,7 @@ class MainWindow(QWidget):
         self.bridge.setup_status_ready.connect(self.on_setup_status_ready)
         self.bridge.update_ready.connect(self.on_update_ready)
         self.bridge.update_failed.connect(self.on_update_failed)
+        self.bridge.logs_ready.connect(self.on_logs_fast_ready)
 
         self.config = load_config()
         self.state_cache = load_state()
@@ -8404,9 +8437,12 @@ class MainWindow(QWidget):
         def worker() -> None:
             try:
                 viewer_text = combined_comfy_log_text(max_bytes=98304, root=current_comfy_root(load_config())).strip() or "Логи ComfyUI появятся здесь после запуска."
-                QTimer.singleShot(0, lambda text=viewer_text: self.on_logs_fast_ready(text))
+                self.bridge.logs_ready.emit(viewer_text)
             except Exception:
-                QTimer.singleShot(0, lambda: self.on_logs_fast_ready("Логи ComfyUI появятся здесь после запуска."))
+                try:
+                    self.bridge.logs_ready.emit("Логи ComfyUI появятся здесь после запуска.")
+                except RuntimeError:
+                    return
 
         threading.Thread(target=worker, daemon=True).start()
 
