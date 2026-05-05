@@ -6,6 +6,7 @@ import locale
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -54,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -63,6 +64,8 @@ GITHUB_RELEASES_URL = f"{GITHUB_REPO_URL}/releases"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/purecomfy/comfy-portal/releases/latest"
 GITHUB_PORTABLE_ASSET_NAME = "Comfy.Portal.Portable.Release.zip"
 GITHUB_ONEFILE_ASSET_NAME = "Comfy.Portal.exe"
+COMFY_GITHUB_REPO_URL = "https://github.com/comfyanonymous/ComfyUI"
+COMFY_GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/comfyanonymous/ComfyUI/releases/latest"
 DEFAULT_WIDTH = 1220
 DEFAULT_HEIGHT = 780
 DRAWER_WIDTH = 340
@@ -84,7 +87,7 @@ MAX_FRIEND_LINKS = 5
 DISCOVER_COMFY_CACHE_TTL = 90.0
 DISCOVER_COMFY_BUDGET_SECONDS = 2.8
 DISCOVER_COMFY_DEEP_BUDGET_SECONDS = 4.5
-LOG_VIEW_POLL_MS = 1100
+LOG_VIEW_POLL_MS = 550
 PUBLIC_TUNNEL_CACHE_TTL = 18.0
 UPDATE_CHECK_CACHE_TTL = 900.0
 OVERLAY_ANIMATION_MS = 180
@@ -104,15 +107,17 @@ PUBLIC_URL_PATTERN = re.compile(r"https://([a-z0-9-]+)\.loca\.lt")
 COMFYUI_PORTABLE_URL = "https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z"
 PINNED_COMFY_PACKAGE_URL = "https://github.com/mofko/ComfyUI/releases/download/FAPEPE/ComfyUI_windows_portable_nvidia.7z"
 COMFYUI_PORTABLE_ARCHIVE_NAME = "ComfyUI_windows_portable_nvidia.7z"
+COMFY_PACKAGE_MARKER_NAME = ".comfy_portal_source.json"
 CUSTOM_COMFY_ARCHIVE_NAME = "ComfyPortal.custom_comfy.7z"
 CUSTOM_COMFY_URL_FILENAME = "ComfyPortal.custom_comfy_url.txt"
 COMFYUI_MANAGER_ARCHIVE_URL = "https://github.com/ltdrdata/ComfyUI-Manager/archive/refs/heads/main.zip"
-DOWNLOAD_USER_AGENT = "ComfyPortal/1.0"
+DOWNLOAD_USER_AGENT = f"ComfyPortal/{APP_VERSION}"
 BUNDLED_CIVITAI_KEYS_B64 = (
     "NTY0MDAxNDRlMTlkZGFjZDMxZjcwNTNkMTZkMzI5Y2M=",
     "YmJiYjlmZmVjMmFjN2VlZjA3NWUxOTUxYzVjMzA0YWI=",
 )
 DEFAULT_LAUNCH_MODE = "fp16"
+DEFAULT_EXTRA_LAUNCH_ARGS = "--disable-dynamic-vram"
 MODEL_SIZE_HINTS = {
     "SAM": 420 * 1024 * 1024,
     "RealESRGAN x2": 70 * 1024 * 1024,
@@ -121,10 +126,13 @@ MODEL_SIZE_HINTS = {
     "CLIP / text_encoders": 8 * 1024 * 1024 * 1024,
     "ControlNet Union": 3 * 1024 * 1024 * 1024,
     "Embeddings": 80 * 1024 * 1024,
-    "Intorealism UNet": 4 * 1024 * 1024 * 1024,
     "Upscale 4x_NMKD-Siax_200k": 70 * 1024 * 1024,
     "mopMixtureOfPerverts_v20.safetensors": 2 * 1024 * 1024 * 1024,
     "xxxRay_dmd2.safetensors": 2 * 1024 * 1024 * 1024,
+    "novaAnimeXL_ilV170.safetensors": 2 * 1024 * 1024 * 1024,
+    "redcraft_ernieRedmix.safetensors": 4 * 1024 * 1024 * 1024,
+    "redcraft_ernieRedmix_txt.safetensors": 8 * 1024 * 1024 * 1024,
+    "flux2-tiny-vae.safetensors": 350 * 1024 * 1024,
     "bbox/face_yolov8m.pt": 60 * 1024 * 1024,
     "bbox/Eyeful_v2-Paired.pt": 90 * 1024 * 1024,
 }
@@ -195,14 +203,6 @@ STARTER_MODEL_SPECS = (
         "detect_extensions": (".pt", ".pth", ".bin", ".ckpt", ".safetensors"),
     },
     {
-        "title": "Intorealism UNet",
-        "filename": "intorealism.safetensors",
-        "url": "https://civitai.com/api/download/models/2835157?type=Model&format=SafeTensor&size=full&fp=fp8",
-        "relative_dir": ("ComfyUI", "models", "unet"),
-        "detect_contains_any": ("intoreal", "intorealism", "intereal"),
-        "detect_extensions": (".safetensors", ".ckpt"),
-    },
-    {
         "title": "Upscale 4x_NMKD-Siax_200k",
         "filename": "4x_NMKD-Siax_200k.pth",
         "url": "https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth?download=true",
@@ -224,6 +224,42 @@ STARTER_MODEL_SPECS = (
         "relative_dir": ("ComfyUI", "models", "checkpoints"),
         "detect_names": ("xxxRay_dmd2.safetensors",),
         "detect_contains_any": ("xxxray", "ray_dmd2", "dmd2", "1624818"),
+        "detect_extensions": (".safetensors", ".ckpt"),
+    },
+    {
+        "title": "novaAnimeXL_ilV170.safetensors",
+        "filename": "novaAnimeXL_ilV170.safetensors",
+        "url": "https://civitai.red/api/download/models/2741698?type=Model&format=SafeTensor&size=pruned&fp=fp16",
+        "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "detect_names": ("novaAnimeXL_ilV170.safetensors",),
+        "detect_contains_any": ("novaanimexl", "novaanime", "2741698"),
+        "detect_extensions": (".safetensors", ".ckpt"),
+    },
+    {
+        "title": "redcraft_ernieRedmix.safetensors",
+        "filename": "redcraft_ernieRedmix.safetensors",
+        "url": "https://civitai.red/api/download/models/2891710?type=Diffusion%20Model&format=Other&fp=fp8",
+        "relative_dir": ("ComfyUI", "models", "unet"),
+        "detect_names": ("redcraft_ernieRedmix.safetensors",),
+        "detect_contains_any": ("redcraft", "ernieredmix", "2891710"),
+        "detect_extensions": (".safetensors", ".ckpt"),
+    },
+    {
+        "title": "redcraft_ernieRedmix_txt.safetensors",
+        "filename": "redcraft_ernieRedmix_txt.safetensors",
+        "url": "https://civitai.red/api/download/models/2891710?fileId=2773413",
+        "relative_dir": ("ComfyUI", "models", "text_encoders"),
+        "detect_names": ("redcraft_ernieRedmix_txt.safetensors",),
+        "detect_contains_any": ("ernieredmix_txt", "redcraft", "2773413"),
+        "detect_extensions": (".safetensors", ".ckpt"),
+    },
+    {
+        "title": "flux2-tiny-vae.safetensors",
+        "filename": "flux2-tiny-vae.safetensors",
+        "url": "https://civitai.red/api/download/models/2891710?fileId=2773335",
+        "relative_dir": ("ComfyUI", "models", "vae"),
+        "detect_names": ("flux2-tiny-vae.safetensors",),
+        "detect_contains_any": ("flux2-tiny-vae", "tiny-vae", "2773335"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
@@ -294,21 +330,21 @@ REQUIRED_NODE_SPECS = (
         "cnr_id": "comfyui-imagewithmetadata",
         "folder": "ImageWithMetadata",
         "repo": "https://github.com/shin131002/ComfyUI-ImageWithMetadata.git",
-        "aliases": ["Save Image with Generation Metadata", "ComfyUI ImageWithMetadata Nodes", "Save Image with Metadata"],
+        "aliases": ["Save Image with Generation Metadata", "ComfyUI ImageWithMetadata Nodes", "Save Image with Metadata", "Execution Timer"],
     },
     {
         "title": "Various ComfyUI Nodes by Type",
         "cnr_id": "comfyui-various",
         "folder": "comfyui-various",
         "repo": "https://github.com/jamesWalker55/comfyui-various.git",
-        "aliases": ["Various ComfyUI Nodes by Type"],
+        "aliases": ["Various ComfyUI Nodes by Type", "Seed Generator"],
     },
     {
         "title": "CRT-Nodes",
         "cnr_id": "crt-nodes",
         "folder": "CRT-Nodes",
         "repo": "https://github.com/PGCRT/CRT-Nodes.git",
-        "aliases": ["CRT-Nodes"],
+        "aliases": ["CRT-Nodes", "CRT_KSamplerBatch"],
     },
     {
         "title": "ComfyUI-Chibi-Nodes",
@@ -330,6 +366,118 @@ REQUIRED_NODE_SPECS = (
         "folder": "ComfyUI_Comfyroll_CustomNodes",
         "repo": "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes.git",
         "aliases": ["Comfyroll Studio", "Comfyroll", "ComfyUI_Comfyroll_CustomNodes", "CR nodes"],
+    },
+    {
+        "title": "ComfyUI ControlNet Aux",
+        "cnr_id": "comfyui-controlnet-aux",
+        "folder": "comfyui_controlnet_aux",
+        "repo": "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
+        "aliases": ["ComfyUI ControlNet Aux", "ControlNet Aux", "controlnet_aux"],
+    },
+    {
+        "title": "ComfyUI LayerStyle",
+        "cnr_id": "comfyui-layerstyle",
+        "folder": "ComfyUI_LayerStyle",
+        "repo": "https://github.com/chflame163/ComfyUI_LayerStyle.git",
+        "aliases": ["ComfyUI LayerStyle", "LayerStyle", "Layer Style"],
+    },
+    {
+        "title": "ComfyUI-KJNodes",
+        "cnr_id": "comfyui-kjnodes",
+        "folder": "ComfyUI-KJNodes",
+        "repo": "https://github.com/kijai/ComfyUI-KJNodes.git",
+        "aliases": ["ComfyUI-KJNodes", "KJNodes", "SetNode", "GetNode", "JWString", "JWInteger"],
+    },
+    {
+        "title": "ComfyUI-SeedVR2 VideoUpscaler",
+        "cnr_id": "comfyui-seedvr2-videoupscaler",
+        "folder": "ComfyUI-SeedVR2_VideoUpscaler",
+        "repo": "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git",
+        "aliases": ["ComfyUI-SeedVR2_VideoUpscaler", "SeedVR2", "SeedVR2 VideoUpscaler"],
+    },
+    {
+        "title": "ComfyUI-RMBG",
+        "cnr_id": "comfyui-rmbg",
+        "folder": "ComfyUI-RMBG",
+        "repo": "https://github.com/1038lab/ComfyUI-RMBG.git",
+        "aliases": ["ComfyUI-RMBG", "RMBG"],
+    },
+    {
+        "title": "ComfyUI-Crystools",
+        "cnr_id": "comfyui-crystools",
+        "folder": "ComfyUI-Crystools",
+        "repo": "https://github.com/crystian/ComfyUI-Crystools.git",
+        "aliases": ["ComfyUI-Crystools", "Crystools"],
+    },
+    {
+        "title": "ComfyUI-Florence2",
+        "cnr_id": "comfyui-florence2",
+        "folder": "ComfyUI-Florence2",
+        "repo": "https://github.com/kijai/ComfyUI-Florence2.git",
+        "aliases": ["ComfyUI-Florence2", "Florence2"],
+    },
+    {
+        "title": "ComfyUI-ReActor",
+        "cnr_id": "comfyui-reactor",
+        "folder": "ComfyUI-ReActor",
+        "repo": "https://github.com/Gourieff/ComfyUI-ReActor.git",
+        "aliases": ["ComfyUI-ReActor", "ReActor"],
+    },
+    {
+        "title": "ComfyUI-QwenVL",
+        "cnr_id": "comfyui-qwenvl",
+        "folder": "ComfyUI-QwenVL",
+        "repo": "https://github.com/1038lab/ComfyUI-QwenVL.git",
+        "aliases": ["ComfyUI-QwenVL", "QwenVL"],
+    },
+    {
+        "title": "ComfyUI_Fill-Nodes",
+        "cnr_id": "comfyui-fill-nodes",
+        "folder": "ComfyUI_Fill-Nodes",
+        "repo": "https://github.com/filliptm/ComfyUI_Fill-Nodes.git",
+        "aliases": ["ComfyUI_Fill-Nodes", "Fill Nodes", "Fill-Nodes"],
+    },
+    {
+        "title": "Derfuu ComfyUI ModdedNodes",
+        "cnr_id": "derfuu-comfyui-moddednodes",
+        "folder": "Derfuu_ComfyUI_ModdedNodes",
+        "repo": "https://github.com/Derfuu/Derfuu_ComfyUI_ModdedNodes.git",
+        "aliases": ["Derfuu_ComfyUI_ModdedNodes", "Derfuu ModdedNodes"],
+    },
+    {
+        "title": "facerestore_cf",
+        "cnr_id": "facerestore-cf",
+        "folder": "facerestore_cf",
+        "repo": "https://github.com/mav-rik/facerestore_cf.git",
+        "aliases": ["facerestore_cf", "FaceRestore CF"],
+    },
+    {
+        "title": "ComfyUI-mxToolkit",
+        "cnr_id": "comfyui-mxtoolkit",
+        "folder": "ComfyUI-mxToolkit",
+        "repo": "https://github.com/Smirnov75/ComfyUI-mxToolkit.git",
+        "aliases": ["ComfyUI-mxToolkit", "mxToolkit"],
+    },
+    {
+        "title": "ComfyUI post processing nodes",
+        "cnr_id": "comfyui-post-processing-nodes",
+        "folder": "ComfyUI-post-processing-nodes",
+        "repo": "https://github.com/EllangoK/ComfyUI-post-processing-nodes.git",
+        "aliases": ["ComfyUI post processing nodes", "post-processing nodes"],
+    },
+    {
+        "title": "virtuoso-nodes",
+        "cnr_id": "virtuoso-nodes",
+        "folder": "virtuoso-nodes",
+        "repo": "https://github.com/chrisfreilich/virtuoso-nodes.git",
+        "aliases": ["virtuoso-nodes", "Virtuoso Nodes"],
+    },
+    {
+        "title": "Comfy Image Saver",
+        "cnr_id": "comfy-image-saver",
+        "folder": "comfy-image-saver",
+        "repo": "https://github.com/giriss/comfy-image-saver.git",
+        "aliases": ["comfy-image-saver", "Image Saver", "FancyTimerNode", "Execution Timer"],
     },
 )
 WORKFLOW_CANDIDATE_NAMES = (
@@ -384,6 +532,7 @@ DOWNLOAD_LINK_STATUS_CACHE = {"items": {}}
 DISCOVER_COMFY_CACHE = {"at": 0.0, "path": None, "anchor": ""}
 PUBLIC_TUNNEL_STATUS_CACHE = {"items": {}}
 UPDATE_RELEASE_CACHE = {"at": 0.0, "info": None}
+COMFY_RELEASE_CACHE = {"at": 0.0, "info": None}
 COMFY_LAUNCH_LOCK = threading.Lock()
 NETWORK_ERROR_HINTS = (
     "connection reset",
@@ -455,6 +604,7 @@ def default_config() -> dict:
         "subdomain": "comfylocal5618",
         "theme": "light",
         "launch_mode": DEFAULT_LAUNCH_MODE,
+        "extra_launch_args": DEFAULT_EXTRA_LAUNCH_ARGS,
         "launch_mode_confirmed": False,
         "onboarding_completed": False,
         "auto_copy_url": True,
@@ -589,6 +739,10 @@ def load_config() -> dict:
     stored_keys = decode_api_keys_b64(existing_raw.get("civitai_api_keys_b64", []))
     config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys)
     config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+    if "extra_launch_args" not in existing_raw:
+        config["extra_launch_args"] = DEFAULT_EXTRA_LAUNCH_ARGS
+    else:
+        config["extra_launch_args"] = normalize_extra_launch_args(config.get("extra_launch_args", ""))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
     if "onboarding_completed" not in existing_raw:
         config["onboarding_completed"] = bool(config.get("launch_mode_confirmed")) and bool(existing_raw)
@@ -608,6 +762,7 @@ def save_config(config: dict) -> None:
     raw_keys = normalize_api_key_items(config.pop("civitai_api_keys", ""))
     config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys + raw_keys)
     config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+    config["extra_launch_args"] = normalize_extra_launch_args(config.get("extra_launch_args", ""))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
     config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
     write_json(CONFIG_PATH, config)
@@ -625,6 +780,29 @@ def normalize_launch_mode(value: str) -> str:
     return clean if clean in COMFY_LAUNCH_MODES else DEFAULT_LAUNCH_MODE
 
 
+def parse_extra_launch_args(value: object) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        return [part for part in shlex.split(text, posix=True) if str(part).strip()]
+    except ValueError:
+        return [part for part in re.split(r"\s+", text) if part]
+
+
+def normalize_extra_launch_args(value: object) -> str:
+    args = parse_extra_launch_args(value)
+    clean: list[str] = []
+    seen: set[str] = set()
+    for arg in args:
+        token = str(arg).strip()
+        if not token or token in seen:
+            continue
+        clean.append(token)
+        seen.add(token)
+    return " ".join(clean)
+
+
 def comfy_launch_spec(config: dict | None = None) -> dict:
     config = config or load_config()
     mode = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
@@ -634,12 +812,17 @@ def comfy_launch_spec(config: dict | None = None) -> dict:
 
 
 def comfy_launch_command(root: Path, config: dict | None = None) -> list[str]:
+    config = config or load_config()
     spec = comfy_launch_spec(config)
+    args = list(spec["args"])
+    for extra_arg in parse_extra_launch_args(config.get("extra_launch_args", "")):
+        if extra_arg not in args:
+            args.append(extra_arg)
     return [
         str(root / "python_embeded" / "python.exe"),
         "-s",
         "ComfyUI\\main.py",
-        *spec["args"],
+        *args,
     ]
 
 
@@ -729,20 +912,10 @@ def resolve_comfy_package_source() -> dict:
             "archive_name": filename,
             }
 
-    installed_root = current_comfy_root()
-    if installed_root:
-        return {
-            "kind": "pinned_url",
-            "label": f"Твоя фиксированная сборка по ссылке {PINNED_COMFY_PACKAGE_URL}",
-            "url": PINNED_COMFY_PACKAGE_URL,
-            "archive_name": COMFYUI_PORTABLE_ARCHIVE_NAME,
-            "source_root": installed_root,
-        }
-
     return {
-        "kind": "pinned_url",
-        "label": f"Твоя фиксированная сборка по ссылке {PINNED_COMFY_PACKAGE_URL}",
-        "url": PINNED_COMFY_PACKAGE_URL,
+        "kind": "official_latest",
+        "label": "Официальная latest portable ComfyUI",
+        "url": COMFYUI_PORTABLE_URL,
         "archive_name": COMFYUI_PORTABLE_ARCHIVE_NAME,
     }
 
@@ -1046,6 +1219,51 @@ def fetch_latest_release_info(force: bool = False) -> dict[str, object]:
     return dict(info)
 
 
+def fetch_latest_comfy_release_info(force: bool = False) -> dict[str, object]:
+    cache = COMFY_RELEASE_CACHE
+    now = time.monotonic()
+    cached = cache.get("info")
+    if cached and not force and (now - float(cache.get("at", 0.0) or 0.0)) < UPDATE_CHECK_CACHE_TTL:
+        return dict(cached)
+    request = urllib.request.Request(COMFY_GITHUB_LATEST_RELEASE_API, headers=github_headers(), method="GET")
+    with urllib.request.urlopen(request, timeout=DOWNLOAD_LINK_TIMEOUT) as response:
+        data = json.loads(response.read().decode("utf-8", errors="replace"))
+    tag_name = str(data.get("tag_name", "") or "").strip()
+    info = {
+        "tag_name": tag_name,
+        "html_url": str(data.get("html_url", "") or COMFY_GITHUB_REPO_URL),
+        "portable_url": COMFYUI_PORTABLE_URL,
+        "available": bool(tag_name),
+    }
+    cache["info"] = dict(info)
+    cache["at"] = now
+    return dict(info)
+
+
+def safe_latest_comfy_release_info(force: bool = False, allow_network: bool = True) -> dict[str, object]:
+    cached = COMFY_RELEASE_CACHE.get("info")
+    if not allow_network:
+        if cached:
+            return dict(cached)
+        return {
+            "tag_name": "",
+            "html_url": COMFY_GITHUB_REPO_URL,
+            "portable_url": COMFYUI_PORTABLE_URL,
+            "available": False,
+            "error": "ComfyUI latest еще не проверен.",
+        }
+    try:
+        return fetch_latest_comfy_release_info(force=force)
+    except Exception as exc:
+        return {
+            "tag_name": "",
+            "html_url": COMFY_GITHUB_REPO_URL,
+            "portable_url": COMFYUI_PORTABLE_URL,
+            "available": False,
+            "error": str(exc),
+        }
+
+
 def generate_friend_subdomain() -> str:
     return f"friendscomfy{secrets.randbelow(100000000):08d}"
 
@@ -1120,6 +1338,99 @@ def coerce_comfy_root(path: str | Path | None) -> Path | None:
         if discovered:
             return discovered.resolve()
     return None
+
+
+def comfy_source_marker_path(root: Path | None) -> Path | None:
+    if not root:
+        return None
+    return Path(root) / COMFY_PACKAGE_MARKER_NAME
+
+
+def read_comfy_source_marker(root: Path | None) -> dict:
+    marker_path = comfy_source_marker_path(root)
+    if not marker_path or not marker_path.exists():
+        return {}
+    try:
+        return json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def write_comfy_source_marker(root: Path | None, source: dict | None = None) -> None:
+    if not root:
+        return
+    source = source or {}
+    latest = safe_latest_comfy_release_info(force=True)
+    marker = {
+        "installed_by": APP_NAME,
+        "installed_at": time.time(),
+        "portal_version": APP_VERSION,
+        "source_kind": str(source.get("kind", "official_latest")),
+        "source_url": str(source.get("url", COMFYUI_PORTABLE_URL)),
+        "archive_name": str(source.get("archive_name", COMFYUI_PORTABLE_ARCHIVE_NAME)),
+        "tag_name": str(latest.get("tag_name", "") or ""),
+    }
+    marker_path = comfy_source_marker_path(root)
+    try:
+        if marker_path:
+            marker_path.write_text(json.dumps(marker, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def comfy_marker_stamp(root: Path | None) -> str:
+    marker_path = comfy_source_marker_path(root)
+    if not marker_path or not marker_path.exists():
+        return ""
+    try:
+        stat = marker_path.stat()
+        return f"{stat.st_mtime_ns}:{stat.st_size}"
+    except Exception:
+        return "marker"
+
+
+def comfy_update_status(root: Path | None, source: dict | None = None) -> dict[str, object]:
+    if not root:
+        return {"available": False, "message": "", "installed_tag": "", "latest_tag": "", "latest_url": ""}
+    source = source or {}
+    if str(source.get("kind", "")) in {"local_folder", "local_archive", "remote_url"}:
+        return {"available": False, "message": "Используется кастомная сборка ComfyUI.", "installed_tag": "", "latest_tag": "", "latest_url": ""}
+    latest = safe_latest_comfy_release_info(allow_network=False)
+    latest_tag = str(latest.get("tag_name", "") or "")
+    marker = read_comfy_source_marker(root)
+    installed_tag = str(marker.get("tag_name", "") or "")
+    latest_url = str(latest.get("portable_url", COMFYUI_PORTABLE_URL) or COMFYUI_PORTABLE_URL)
+    if not latest.get("available"):
+        return {
+            "available": False,
+            "message": "Не удалось проверить latest ComfyUI. Продолжаем с текущей сборкой.",
+            "installed_tag": installed_tag,
+            "latest_tag": latest_tag,
+            "latest_url": latest_url,
+        }
+    if installed_tag and latest_tag and is_version_newer(latest_tag, installed_tag):
+        return {
+            "available": True,
+            "message": f"Доступна новая ComfyUI {latest_tag}. Текущая: {installed_tag}.",
+            "installed_tag": installed_tag,
+            "latest_tag": latest_tag,
+            "latest_url": latest_url,
+        }
+    if not installed_tag:
+        return {
+            "available": True,
+            "message": f"Версия ComfyUI неизвестна. Можно обновить до latest {latest_tag}.",
+            "installed_tag": "",
+            "latest_tag": latest_tag,
+            "latest_url": latest_url,
+        }
+    return {
+        "available": False,
+        "message": f"ComfyUI актуальна: {installed_tag}.",
+        "installed_tag": installed_tag,
+        "latest_tag": latest_tag,
+        "latest_url": latest_url,
+    }
 
 
 def legacy_startup_script_path() -> Path:
@@ -1530,23 +1841,39 @@ def workflow_required_node_specs() -> tuple[list[dict], list[str], list[str]]:
     unresolved: set[str] = set()
     used_files: list[str] = []
 
+    def iter_workflow_node_dicts(data: object) -> list[dict]:
+        if not isinstance(data, dict):
+            return []
+        raw_nodes = data.get("nodes")
+        if isinstance(raw_nodes, list):
+            return [node for node in raw_nodes if isinstance(node, dict)]
+        if isinstance(raw_nodes, dict):
+            return [node for node in raw_nodes.values() if isinstance(node, dict)]
+        if all(isinstance(value, dict) for value in data.values()):
+            return [node for node in data.values() if isinstance(node, dict) and ("class_type" in node or "type" in node)]
+        return []
+
     for path in files:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        nodes = data.get("nodes", [])
-        if not isinstance(nodes, list):
+        nodes = iter_workflow_node_dicts(data)
+        if not nodes:
             continue
         used_files.append(path.name)
         for node in nodes:
             if not isinstance(node, dict):
                 continue
             properties = node.get("properties") or {}
+            meta = node.get("_meta") or {}
             for raw_value in (
                 properties.get("cnr_id"),
                 properties.get("aux_id"),
+                properties.get("Node name for S&R"),
                 node.get("type"),
+                node.get("class_type"),
+                meta.get("title"),
             ):
                 key = normalized_node_identifier(str(raw_value or ""))
                 if not key:
@@ -1631,6 +1958,7 @@ def setup_status_cache_key(config: dict | None = None) -> str:
             str(source.get("source_root", "")),
             str(source.get("archive_path", "")),
             str(source.get("url", "")),
+            comfy_marker_stamp(Path(root) if root else None),
             secret_list_stamp(config.get("civitai_api_keys_b64", [])),
             setup_presence_stamp(root),
         ]
@@ -1644,6 +1972,7 @@ def comfy_setup_status(config: dict | None = None) -> dict:
     root_path = root or (Path(configured_root) if configured_root else None)
     root_text = str(root_path) if root_path else ""
     source = resolve_comfy_package_source()
+    update_status = comfy_update_status(root, source)
     workflow_specs, unresolved_workflow_nodes, workflow_files = workflow_required_node_specs()
     manager_ready = manager_is_installed(root)
     model_states = []
@@ -1666,6 +1995,11 @@ def comfy_setup_status(config: dict | None = None) -> dict:
         "source_label": source["label"],
         "source_kind": source["kind"],
         "comfy_ready": bool(root),
+        "comfy_update_available": bool(update_status.get("available", False)),
+        "comfy_update_message": str(update_status.get("message", "") or ""),
+        "comfy_installed_tag": str(update_status.get("installed_tag", "") or ""),
+        "comfy_latest_tag": str(update_status.get("latest_tag", "") or ""),
+        "comfy_latest_url": str(update_status.get("latest_url", "") or ""),
         "manager_ready": manager_ready,
         "models": model_states,
         "nodes": collect_node_states(root),
@@ -1724,6 +2058,8 @@ def comfy_core_missing_count(status: dict) -> int:
     count = 0
     if not status.get("comfy_ready"):
         count += 1
+    elif status.get("comfy_update_available"):
+        count += 1
     if not status.get("manager_ready"):
         count += 1
     count += sum(1 for item in status.get("models", []) if not item.get("ready"))
@@ -1738,6 +2074,8 @@ def missing_setup_titles(status: dict, include_nodes: bool = True) -> list[str]:
     missing: list[str] = []
     if not status.get("comfy_ready"):
         missing.append("Portable ComfyUI")
+    elif status.get("comfy_update_available"):
+        missing.append("Обновление ComfyUI")
     if not status.get("manager_ready"):
         missing.append("ComfyUI Manager")
     missing.extend(str(item.get("title", "model")) for item in status.get("models", []) if not item.get("ready"))
@@ -1768,6 +2106,7 @@ def assert_nodes_verified(root: Path) -> None:
 def estimate_setup_eta(status: dict) -> str:
     missing_models = sum(1 for item in status.get("models", []) if not item.get("ready"))
     comfy_missing = not status.get("comfy_ready")
+    comfy_update = bool(status.get("comfy_update_available"))
     manager_missing = not status.get("manager_ready")
     source_kind = status.get("source_kind", "")
 
@@ -1777,6 +2116,8 @@ def estimate_setup_eta(status: dict) -> str:
         if source_kind in {"local_archive", "remote_url"}:
             return "~4-10 мин"
         return "~6-15 мин"
+    if comfy_update:
+        return "~4-10 мин"
 
     missing_nodes = sum(1 for item in status.get("nodes", []) if not item.get("ready"))
     missing_total = missing_models + missing_nodes + (1 if manager_missing else 0)
@@ -2389,11 +2730,44 @@ def extract_7z_archive(archive_path: Path, destination_dir: Path) -> None:
     )
 
 
-def install_comfyui_portable(install_parent: Path, progress=None) -> Path:
+PRESERVED_COMFY_UPDATE_DIRS = {
+    ("ComfyUI", "models"),
+    ("ComfyUI", "custom_nodes"),
+    ("ComfyUI", "input"),
+    ("ComfyUI", "output"),
+    ("ComfyUI", "user"),
+    ("ComfyUI", "workflows"),
+}
+
+
+def should_preserve_comfy_update_path(relative_path: Path) -> bool:
+    parts = tuple(relative_path.parts)
+    for preserved in PRESERVED_COMFY_UPDATE_DIRS:
+        if len(parts) >= len(preserved) and tuple(part.lower() for part in parts[: len(preserved)]) == tuple(part.lower() for part in preserved):
+            return True
+    return False
+
+
+def merge_comfy_update_tree(source_root: Path, target_root: Path, base_source: Path | None = None) -> None:
+    base_source = base_source or source_root
+    for item in source_root.iterdir():
+        relative = item.relative_to(base_source)
+        if should_preserve_comfy_update_path(relative):
+            continue
+        destination = target_root / relative
+        if item.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+            merge_comfy_update_tree(item, target_root, base_source)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, destination)
+
+
+def install_comfyui_portable(install_parent: Path, progress=None, force_update: bool = False) -> Path:
     install_parent = install_parent.expanduser().resolve()
     install_parent.mkdir(parents=True, exist_ok=True)
     existing_root = discover_comfy_root_in(install_parent)
-    if existing_root:
+    if existing_root and not force_update:
         if progress:
             progress(1.0, "Portable ComfyUI уже найден", build_setup_progress_meta("comfy", "done", 100, "Portable уже установлен"))
         config = load_config()
@@ -2402,6 +2776,77 @@ def install_comfyui_portable(install_parent: Path, progress=None) -> Path:
         return existing_root
 
     source = resolve_comfy_package_source()
+    if existing_root and force_update:
+        if progress:
+            progress(0.0, "Обновляем portable ComfyUI", build_setup_progress_meta("comfy", "prepare", 0, "Сохраняем models/custom_nodes/output"))
+        try:
+            stop_all()
+        except Exception:
+            pass
+        with tempfile.TemporaryDirectory(prefix="comfyportal_comfy_update_") as temp_dir:
+            temp_parent = Path(temp_dir)
+            if source["kind"] in {"local_installed", "local_folder"}:
+                new_root = Path(source["source_root"]).resolve()
+            elif source["kind"] == "local_archive":
+                if progress:
+                    progress(0.20, "Распаковываем новую ComfyUI", build_setup_progress_meta("comfy", "extract", None, "Локальный архив"))
+                extract_7z_archive(Path(source["archive_path"]), temp_parent)
+                new_root = discover_comfy_root_in(temp_parent)
+            else:
+                archive_name = str(source.get("archive_name", COMFYUI_PORTABLE_ARCHIVE_NAME))
+                archive_path = DATA_DIR / archive_name
+                if progress:
+                    progress(0.0, f"Скачиваем обновление {archive_name}", build_setup_progress_meta("comfy", "prepare", 0, "Подготовка"))
+                download_file(
+                    str(source["url"]),
+                    archive_path,
+                    progress_cb=(
+                        None
+                        if not progress
+                        else lambda downloaded, total, rate: progress(
+                            0.05 + (0.65 * (downloaded / total if total else 0.0)),
+                            f"Скачиваем обновление {archive_name}",
+                            build_setup_progress_meta(
+                                "comfy",
+                                "download",
+                                100 * (downloaded / total if total else 0.0),
+                                f"{format_bytes(rate)}/s" + (f" • {format_bytes(downloaded)} / {format_bytes(total)}" if total else ""),
+                            ),
+                        )
+                    ),
+                    status_cb=(
+                        None
+                        if not progress
+                        else lambda text: progress(
+                            0.05,
+                            f"Скачиваем обновление {archive_name}",
+                            build_setup_progress_meta("comfy", "download", None, text),
+                        )
+                    ),
+                )
+                try:
+                    if progress:
+                        progress(0.75, "Распаковываем обновление ComfyUI", build_setup_progress_meta("comfy", "extract", None, "Распаковка"))
+                    extract_7z_archive(archive_path, temp_parent)
+                finally:
+                    try:
+                        archive_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                new_root = discover_comfy_root_in(temp_parent)
+            if not new_root or not is_comfy_root(new_root):
+                raise RuntimeError("Обновление ComfyUI скачано, но portable-папка внутри архива не найдена.")
+            if progress:
+                progress(0.92, "Обновляем файлы ComfyUI", build_setup_progress_meta("comfy", "copy", None, "models/custom_nodes/output сохраняются"))
+            merge_comfy_update_tree(new_root, existing_root)
+        write_comfy_source_marker(existing_root, source)
+        config = load_config()
+        config["comfy_root"] = str(existing_root)
+        save_config(config)
+        if progress:
+            progress(1.0, "ComfyUI обновлена", build_setup_progress_meta("comfy", "done", 100, "Обновление готово"))
+        return existing_root
+
     if source["kind"] in {"local_installed", "local_folder"}:
         source_root = Path(source["source_root"]).resolve()
         target_root = install_parent / source_root.name
@@ -2420,6 +2865,7 @@ def install_comfyui_portable(install_parent: Path, progress=None) -> Path:
         config = load_config()
         config["comfy_root"] = str(extracted_root)
         save_config(config)
+        write_comfy_source_marker(extracted_root, source)
         return extracted_root
 
     if source["kind"] == "local_archive":
@@ -2478,6 +2924,7 @@ def install_comfyui_portable(install_parent: Path, progress=None) -> Path:
     config = load_config()
     config["comfy_root"] = str(extracted_root)
     save_config(config)
+    write_comfy_source_marker(extracted_root, source)
     return extracted_root
 
 
@@ -2596,6 +3043,7 @@ def install_starter_models(root: Path, progress=None, specs: list[dict] | tuple[
         if progress:
             progress((index - 1) / total_count, f"Скачиваем {spec['title']}", build_setup_progress_meta(row_key, "prepare", 0, "Подготовка"))
         last_error = ""
+        download_ok = False
         for attempt_index, (download_url, request_headers, resolved_filename) in enumerate(request_variants, start=1):
             if resolved_filename and target_filename != resolved_filename:
                 target_filename = resolved_filename
@@ -2629,6 +3077,7 @@ def install_starter_models(root: Path, progress=None, specs: list[dict] | tuple[
                     ),
                     request_headers=request_headers,
                 )
+                download_ok = True
                 break
             except RuntimeError as exc:
                 last_error = str(exc)
@@ -2644,9 +3093,13 @@ def install_starter_models(root: Path, progress=None, specs: list[dict] | tuple[
                             build_setup_progress_meta(row_key, "download", None, "Civitai key не подошел, переключаемся"),
                         )
                     continue
-                raise
-        else:
-            raise RuntimeError(last_error or f"Не удалось скачать {spec['title']}.")
+                continue
+        if not download_ok:
+            message = f"{spec['title']}: {last_error or 'не удалось скачать файл.'}"
+            results.append(message)
+            if progress:
+                progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, last_error or "Ошибка загрузки"))
+            continue
         if progress:
             progress(
                 ((index - 1) + 0.98) / total_count,
@@ -2654,7 +3107,11 @@ def install_starter_models(root: Path, progress=None, specs: list[dict] | tuple[
                 build_setup_progress_meta(row_key, "verify", 98, "Проверяем файл на диске"),
             )
         if not starter_model_exists(root, spec):
-            raise RuntimeError(f"{spec['title']} скачан, но проверка не нашла файл в нужной папке.")
+            message = f"{spec['title']} скачан, но проверка не нашла файл в нужной папке."
+            results.append(message)
+            if progress:
+                progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "Проверка файла не прошла"))
+            continue
         invalidate_setup_status_cache()
         results.append(f"{spec['title']} скачан и проверен")
         if progress:
@@ -2684,40 +3141,54 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
             shutil.rmtree(target_dir, ignore_errors=True)
         if progress:
             progress((index - 1) / total_count, f"Клонируем {spec['title']}", build_setup_progress_meta(row_key, "clone", None, "git clone"))
-        run_hidden_process_with_retries(
-            ["git", "clone", "--depth", "1", spec["repo"], str(target_dir)],
-            custom_nodes_dir,
-            f"Не удалось установить {spec['title']}",
-            status_cb=(
-                None
-                if not progress
-                else lambda text, spec_title=spec["title"]: progress(
-                    (index - 1 + 0.1) / total_count,
-                    f"Клонируем {spec_title}",
-                    build_setup_progress_meta(row_key, "clone", None, text),
-                )
-            ),
-            cleanup_before_retry=lambda target=target_dir: shutil.rmtree(target, ignore_errors=True),
-        )
+        try:
+            run_hidden_process_with_retries(
+                ["git", "clone", "--depth", "1", spec["repo"], str(target_dir)],
+                custom_nodes_dir,
+                f"Не удалось установить {spec['title']}",
+                status_cb=(
+                    None
+                    if not progress
+                    else lambda text, spec_title=spec["title"]: progress(
+                        (index - 1 + 0.1) / total_count,
+                        f"Клонируем {spec_title}",
+                        build_setup_progress_meta(row_key, "clone", None, text),
+                    )
+                ),
+                cleanup_before_retry=lambda target=target_dir: shutil.rmtree(target, ignore_errors=True),
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            results.append(message)
+            if progress:
+                progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "GitHub недоступен или clone не удался"))
+            continue
         requirements_path = target_dir / "requirements.txt"
         if requirements_path.exists():
             python_bin = root / "python_embeded" / "python.exe"
             if progress:
                 progress((index - 1 + 0.7) / total_count, f"Ставим зависимости для {spec['title']}", build_setup_progress_meta(row_key, "deps", None, "pip install"))
-            run_hidden_process_with_retries(
-                [str(python_bin), "-s", "-m", "pip", "install", "-r", str(requirements_path)],
-                target_dir,
-                f"Не удалось поставить зависимости {spec['title']}",
-                status_cb=(
-                    None
-                    if not progress
-                    else lambda text, spec_title=spec["title"]: progress(
-                        (index - 1 + 0.75) / total_count,
-                        f"Ставим зависимости для {spec_title}",
-                        build_setup_progress_meta(row_key, "deps", None, text),
-                    )
-                ),
-            )
+            try:
+                run_hidden_process_with_retries(
+                    [str(python_bin), "-s", "-m", "pip", "install", "-r", str(requirements_path)],
+                    target_dir,
+                    f"Не удалось поставить зависимости {spec['title']}",
+                    status_cb=(
+                        None
+                        if not progress
+                        else lambda text, spec_title=spec["title"]: progress(
+                            (index - 1 + 0.75) / total_count,
+                            f"Ставим зависимости для {spec_title}",
+                            build_setup_progress_meta(row_key, "deps", None, text),
+                        )
+                    ),
+                )
+            except RuntimeError as exc:
+                message = str(exc)
+                results.append(message)
+                if progress:
+                    progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "pip install не удался"))
+                continue
         if progress:
             progress(
                 (index - 1 + 0.96) / total_count,
@@ -2725,7 +3196,11 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
                 build_setup_progress_meta(row_key, "verify", 98, "Проверяем папку ноды"),
             )
         if not node_is_installed(root, spec):
-            raise RuntimeError(f"{spec['title']} установлен, но проверка не нашла папку ноды.")
+            message = f"{spec['title']} установлен, но проверка не нашла папку ноды."
+            results.append(message)
+            if progress:
+                progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "Проверка папки не прошла"))
+            continue
         invalidate_setup_status_cache()
         results.append(f"{spec['title']} установлен")
         if progress:
@@ -2737,11 +3212,12 @@ def install_comfy_setup(install_parent: Path | None = None, progress=None) -> st
     root = current_comfy_root()
     messages: list[str] = []
     status = cached_comfy_setup_status(force=True)
+    update_available = bool(root and status.get("comfy_update_available"))
     manager_missing = not status.get("manager_ready")
     missing_model_specs = pending_starter_model_specs(root)
     missing_node_specs_list = pending_node_specs(root)
     total_units = (
-        (1 if not root else 0)
+        (1 if (not root or update_available) else 0)
         + (1 if manager_missing else 0)
         + len(missing_model_specs)
         + len(missing_node_specs_list)
@@ -2766,6 +3242,12 @@ def install_comfy_setup(install_parent: Path | None = None, progress=None) -> st
             raise RuntimeError("Выбери папку, куда скачать portable ComfyUI.")
         root = install_comfyui_portable(install_parent, progress=lambda fraction, detail, meta="": emit(1, fraction, detail, meta))
         messages.append(f"ComfyUI готов в {root}")
+        completed_units += 1
+        missing_model_specs = pending_starter_model_specs(root, missing_model_specs)
+        missing_node_specs_list = pending_node_specs(root, missing_node_specs_list)
+    elif update_available:
+        root = install_comfyui_portable(root.parent, progress=lambda fraction, detail, meta="": emit(1, fraction, detail, meta), force_update=True)
+        messages.append("ComfyUI обновлена до latest-сборки.")
         completed_units += 1
         missing_model_specs = pending_starter_model_specs(root, missing_model_specs)
         missing_node_specs_list = pending_node_specs(root, missing_node_specs_list)
@@ -2815,9 +3297,10 @@ def install_comfy_core_setup(install_parent: Path | None = None, progress=None) 
     root = current_comfy_root()
     messages: list[str] = []
     status = cached_comfy_setup_status(force=True)
+    update_available = bool(root and status.get("comfy_update_available"))
     manager_missing = not status.get("manager_ready")
     missing_model_specs = pending_starter_model_specs(root)
-    total_units = (1 if not root else 0) + (1 if manager_missing else 0) + len(missing_model_specs)
+    total_units = (1 if (not root or update_available) else 0) + (1 if manager_missing else 0) + len(missing_model_specs)
     total_units = max(total_units, 1)
     completed_units = 0.0
     last_percent = 0
@@ -2838,6 +3321,11 @@ def install_comfy_core_setup(install_parent: Path | None = None, progress=None) 
             raise RuntimeError("Выбери папку, куда скачать portable ComfyUI.")
         root = install_comfyui_portable(install_parent, progress=lambda fraction, detail, meta="": emit(1, fraction, detail, meta))
         messages.append(f"ComfyUI готов в {root}")
+        completed_units += 1
+        missing_model_specs = pending_starter_model_specs(root, missing_model_specs)
+    elif update_available:
+        root = install_comfyui_portable(root.parent, progress=lambda fraction, detail, meta="": emit(1, fraction, detail, meta), force_update=True)
+        messages.append("ComfyUI обновлена до latest-сборки.")
         completed_units += 1
         missing_model_specs = pending_starter_model_specs(root, missing_model_specs)
     else:
@@ -5533,7 +6021,10 @@ class ComfySetupPage(QWidget):
             self.folder_label.setText(f"Папка установки: {self.install_target_path}")
         else:
             self.folder_label.setText("Папка пока не выбрана")
-        self.status_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
+        if comfy_ready and status.get("comfy_update_available"):
+            self.status_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Доступно обновление ComfyUI."), "missing")
+        else:
+            self.status_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
         self.status_rows["manager"].set_state(
             manager_ready,
             "Manager уже установлен" if manager_ready else ("Сначала нужен portable ComfyUI" if not comfy_ready else "Будет поставлен в custom_nodes"),
@@ -5574,7 +6065,8 @@ class ComfySetupPage(QWidget):
         if self.active_scope == "comfy":
             self.comfy_section.set_action_state("Установка...", False, True)
         else:
-            self.comfy_section.set_action_state("Установить Comfy" if comfy_missing else "Все установлено", comfy_missing > 0 and self.active_scope != "nodes", False)
+            comfy_action = "Обновить Comfy" if status.get("comfy_update_available") else "Установить Comfy"
+            self.comfy_section.set_action_state(comfy_action if comfy_missing else "Все установлено", comfy_missing > 0 and self.active_scope != "nodes", False)
         if self.active_scope == "nodes":
             self.nodes_section.set_action_state("Установка...", False, True)
         else:
@@ -5680,6 +6172,7 @@ class MainWindow(QWidget):
         self.install_setup_last_error = False
         self.setup_page_widget: ComfySetupPage | None = None
         self.release_info: dict[str, object] | None = None
+        self.update_banner_kind = "portal"
         self.update_check_inflight = False
         self.update_download_inflight = False
         self.update_banner_dismissed_tag = ""
@@ -6396,6 +6889,16 @@ class MainWindow(QWidget):
             self.launch_mode_buttons[mode_key] = button
             launch_mode_layout.addWidget(button)
 
+        self.extra_launch_args_label = QLabel("Extra Comfy args")
+        self.extra_launch_args_label.setObjectName("drawerLabel")
+        self.extra_launch_args_input = QLineEdit()
+        self.extra_launch_args_input.setObjectName("drawerInput")
+        self.extra_launch_args_input.setPlaceholderText("--disable-dynamic-vram")
+        self.extra_launch_args_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.extra_launch_args_input.setMinimumHeight(44)
+        self.extra_launch_args_input.setToolTip("Дополнительные аргументы запуска ComfyUI. По умолчанию стоит --disable-dynamic-vram.")
+        self.extra_launch_args_input.textEdited.connect(self.mark_settings_dirty)
+
         self.theme_label = QLabel("Theme")
         self.theme_label.setObjectName("drawerLabel")
         self.theme_segment = QFrame()
@@ -6449,6 +6952,8 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.port_input)
         drawer_layout.addWidget(self.launch_mode_label)
         drawer_layout.addWidget(self.launch_mode_segment)
+        drawer_layout.addWidget(self.extra_launch_args_label)
+        drawer_layout.addWidget(self.extra_launch_args_input)
         drawer_layout.addWidget(self.theme_label)
         drawer_layout.addWidget(self.theme_segment)
         drawer_layout.addWidget(self.auto_copy_row)
@@ -7300,6 +7805,13 @@ class MainWindow(QWidget):
                     if button.isChecked() != should_check:
                         button.setChecked(should_check)
 
+                extra_args_text = normalize_extra_launch_args(self.config.get("extra_launch_args", ""))
+                if not self.extra_launch_args_input.hasFocus() and self.extra_launch_args_input.text() != extra_args_text:
+                    self.extra_launch_args_input.setText(extra_args_text)
+                self.extra_launch_args_input.setToolTip(extra_args_text or "Дополнительные аргументы запуска ComfyUI")
+                if not self.extra_launch_args_input.hasFocus():
+                    self.extra_launch_args_input.setCursorPosition(0)
+
                 if self.auto_copy_toggle.isChecked() != self.config.get("auto_copy_url", True):
                     self.auto_copy_toggle.setChecked(self.config.get("auto_copy_url", True))
                 if self.auto_restart_toggle.isChecked() != self.config.get("auto_restart_tunnel", True):
@@ -7753,14 +8265,20 @@ class MainWindow(QWidget):
         QDesktopServices.openUrl(QUrl(GITHUB_REPO_URL))
 
     def open_github_releases(self) -> None:
-        target = str((self.release_info or {}).get("html_url", "") or GITHUB_RELEASES_URL)
+        if self.update_banner_kind == "comfy":
+            target = str((self.release_info or {}).get("html_url", "") or COMFY_GITHUB_REPO_URL)
+        else:
+            target = str((self.release_info or {}).get("html_url", "") or GITHUB_RELEASES_URL)
         QDesktopServices.openUrl(QUrl(target))
 
     def refresh_onboarding_install_rows(self, status: dict) -> None:
         comfy_ready = bool(status.get("comfy_ready"))
         manager_ready = bool(status.get("manager_ready"))
         if "comfy" in self.onboarding_install_rows:
-            self.onboarding_install_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
+            if comfy_ready and status.get("comfy_update_available"):
+                self.onboarding_install_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Доступно обновление ComfyUI."), "missing")
+            else:
+                self.onboarding_install_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
         if "manager" in self.onboarding_install_rows:
             self.onboarding_install_rows["manager"].set_state(
                 manager_ready,
@@ -7945,6 +8463,23 @@ class MainWindow(QWidget):
         def worker() -> None:
             try:
                 info = fetch_latest_release_info(force=force)
+                if not info.get("newer"):
+                    safe_latest_comfy_release_info(force=force)
+                    setup_status = cached_comfy_setup_status(load_config(), force=True)
+                    if setup_status.get("comfy_update_available"):
+                        info = {
+                            "kind": "comfy",
+                            "tag_name": setup_status.get("comfy_latest_tag", ""),
+                            "html_url": COMFY_GITHUB_REPO_URL,
+                            "portable_url": setup_status.get("comfy_latest_url", COMFYUI_PORTABLE_URL),
+                            "available": True,
+                            "newer": True,
+                            "message": setup_status.get("comfy_update_message", ""),
+                        }
+                    else:
+                        info["kind"] = "portal"
+                else:
+                    info["kind"] = "portal"
                 try:
                     self.bridge.update_ready.emit(info)
                 except RuntimeError:
@@ -7960,7 +8495,8 @@ class MainWindow(QWidget):
     def on_update_ready(self, info: dict) -> None:
         self.update_check_inflight = False
         self.release_info = dict(info)
-        if info.get("newer") and str(info.get("tag_name", "")) != self.update_banner_dismissed_tag:
+        banner_id = f"{info.get('kind', 'portal')}:{info.get('tag_name', '')}"
+        if info.get("newer") and banner_id != self.update_banner_dismissed_tag:
             self.show_update_banner(info)
         else:
             self.update_banner.hide()
@@ -7969,21 +8505,32 @@ class MainWindow(QWidget):
         self.update_check_inflight = False
 
     def show_update_banner(self, info: dict) -> None:
+        self.update_banner_kind = str(info.get("kind", "portal") or "portal")
         version_text = str(info.get("tag_name", "") or "").strip()
-        self.update_banner_title.setText(f"Доступно обновление {version_text}" if version_text else "Доступно обновление")
-        self.update_banner_subtitle.setText("На GitHub вышел новый релиз. Можно скачать и обновить портал прямо из приложения.")
-        self.update_banner_install_button.setText("Обновить")
+        if self.update_banner_kind == "comfy":
+            self.update_banner_title.setText(f"Доступна ComfyUI {version_text}" if version_text else "Доступно обновление ComfyUI")
+            self.update_banner_subtitle.setText(str(info.get("message", "") or "Можно обновить ComfyUI до latest-сборки. Models, custom_nodes и output сохраняются."))
+            self.update_banner_install_button.setText("Обновить Comfy")
+        else:
+            self.update_banner_title.setText(f"Доступно обновление {version_text}" if version_text else "Доступно обновление")
+            self.update_banner_subtitle.setText("На GitHub вышел новый релиз. Можно скачать и обновить портал прямо из приложения.")
+            self.update_banner_install_button.setText("Обновить")
         self.update_banner_install_button.setEnabled(True)
         self.update_banner.show()
         self.place_update_banner()
 
     def dismiss_update_banner(self) -> None:
         if self.release_info:
-            self.update_banner_dismissed_tag = str(self.release_info.get("tag_name", "") or "")
+            self.update_banner_dismissed_tag = f"{self.release_info.get('kind', 'portal')}:{self.release_info.get('tag_name', '')}"
         self.update_banner.hide()
 
     def install_github_update(self) -> None:
         if self.update_download_inflight or not self.release_info:
+            return
+        if self.update_banner_kind == "comfy":
+            self.update_banner.hide()
+            self.set_setup_view_open(True)
+            self.start_setup_install("comfy")
             return
         self.update_download_inflight = True
         self.update_banner_install_button.setEnabled(False)
@@ -8007,6 +8554,7 @@ class MainWindow(QWidget):
         updated_config["launch_mode"] = normalize_launch_mode(
             next((mode for mode, button in self.launch_mode_buttons.items() if button.isChecked()), self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
         )
+        updated_config["extra_launch_args"] = normalize_extra_launch_args(self.extra_launch_args_input.text())
         updated_config["launch_mode_confirmed"] = True
         updated_config["auto_copy_url"] = self.auto_copy_toggle.isChecked()
         updated_config["auto_restart_tunnel"] = self.auto_restart_toggle.isChecked()
@@ -8441,6 +8989,7 @@ class MainWindow(QWidget):
         updated_config["launch_mode"] = normalize_launch_mode(
             next((mode for mode, button in self.launch_mode_buttons.items() if button.isChecked()), self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
         )
+        updated_config["extra_launch_args"] = normalize_extra_launch_args(self.extra_launch_args_input.text())
         updated_config["launch_mode_confirmed"] = True
         updated_config["auto_copy_url"] = self.auto_copy_toggle.isChecked()
         updated_config["auto_restart_tunnel"] = self.auto_restart_toggle.isChecked()

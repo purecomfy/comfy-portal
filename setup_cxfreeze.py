@@ -128,7 +128,7 @@ executables = [
 
 setup(
     name="Comfy Portal",
-    version="1.1.3",
+    version="1.1.4",
     description="ComfyUI launcher and tunnel manager",
     options={"build_exe": build_exe_options},
     executables=executables,
