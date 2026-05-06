@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -89,6 +89,7 @@ DISCOVER_COMFY_BUDGET_SECONDS = 2.8
 DISCOVER_COMFY_DEEP_BUDGET_SECONDS = 4.5
 LOG_VIEW_POLL_MS = 550
 PUBLIC_TUNNEL_CACHE_TTL = 18.0
+TUNNEL_READY_GRACE_SECONDS = 38.0
 UPDATE_CHECK_CACHE_TTL = 900.0
 OVERLAY_ANIMATION_MS = 180
 PANEL_SLIDE_OFFSET = 6
@@ -628,6 +629,7 @@ def default_state() -> dict:
     return {
         "comfy_pid": None,
         "tunnel_pid": None,
+        "tunnel_started_at": 0.0,
         "last_url": "",
         "friend_links": [],
         "desired_running": False,
@@ -1047,6 +1049,10 @@ def normalize_state(raw_state: dict | None) -> dict:
     for legacy_key in ("friend_tunnel_pid", "friend_subdomain", "friend_last_url"):
         state.pop(legacy_key, None)
     state["last_url"] = str(state.get("last_url", "")).strip()
+    try:
+        state["tunnel_started_at"] = float(state.get("tunnel_started_at", 0.0) or 0.0)
+    except Exception:
+        state["tunnel_started_at"] = 0.0
     try:
         state["tunnel_retry_after"] = float(state.get("tunnel_retry_after", 0.0) or 0.0)
     except Exception:
@@ -3508,6 +3514,7 @@ def schedule_tunnel_retry(error_text: str = "") -> None:
     if error_text:
         state["last_tunnel_error"] = error_text
     state["tunnel_pid"] = None
+    state["tunnel_started_at"] = 0.0
     save_state(state)
 
 
@@ -3663,6 +3670,36 @@ def any_tunnel_process(state: dict | None = None) -> bool:
     return pid_is_running(state.get("tunnel_pid")) or bool(cached_process_scan("tunnel"))
 
 
+def main_tunnel_process_age(state: dict | None = None) -> float:
+    state = state or load_state()
+    now = time.time()
+    ages: list[float] = []
+    pids: set[int] = set()
+    try:
+        pid = int(state.get("tunnel_pid") or 0)
+        if pid:
+            pids.add(pid)
+    except Exception:
+        pass
+    for pid in cached_process_scan("tunnel", force=True):
+        try:
+            pids.add(int(pid))
+        except Exception:
+            continue
+    for pid in pids:
+        try:
+            ages.append(max(0.0, now - psutil.Process(pid).create_time()))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+            continue
+    if ages:
+        return max(ages)
+    try:
+        started_at = float(state.get("tunnel_started_at", 0.0) or 0.0)
+    except Exception:
+        started_at = 0.0
+    return max(0.0, now - started_at) if started_at else 0.0
+
+
 def any_friend_tunnel_process(state: dict | None = None) -> bool:
     state = state or load_state()
     for entry in state.get("friend_links", []):
@@ -3748,6 +3785,18 @@ def detect_tunnel_url(path: Path, preferred_subdomain: str = "") -> str:
     return matches[-1]
 
 
+def detect_tunnel_url_from_logs(paths: list[Path] | tuple[Path, ...], preferred_subdomain: str = "") -> str:
+    for path in paths:
+        detected = detect_tunnel_url(path, preferred_subdomain)
+        if detected:
+            return detected
+    return ""
+
+
+def expected_tunnel_url(subdomain: str) -> str:
+    return friend_url_for_subdomain(normalize_subdomain(subdomain))
+
+
 def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
     clean_url = str(url or "").strip().rstrip("/")
     if not clean_url:
@@ -3785,11 +3834,12 @@ def cached_public_tunnel_ready(url: str, force: bool = False) -> bool:
     return ready
 
 
-def wait_for_public_tunnel_url(log_path: Path, subdomain: str, timeout_seconds: float = 20.0, interval_seconds: float = 0.35) -> str:
+def wait_for_public_tunnel_url(log_path: Path | tuple[Path, ...] | list[Path], subdomain: str, timeout_seconds: float = 20.0, interval_seconds: float = 0.35) -> str:
+    log_paths = tuple(log_path) if isinstance(log_path, (tuple, list)) else (log_path,)
     deadline = time.time() + timeout_seconds
     last_detected = ""
     while time.time() < deadline:
-        detected = detect_tunnel_url(log_path, subdomain)
+        detected = detect_tunnel_url_from_logs(log_paths, subdomain) or expected_tunnel_url(subdomain)
         if detected:
             last_detected = detected
             if cached_public_tunnel_ready(detected, force=True):
@@ -4049,14 +4099,26 @@ def start_tunnel_if_needed() -> str:
         if not wait_for_comfy_ready(config["port"], timeout_seconds=30.0, interval_seconds=0.5):
             raise RuntimeError("ComfyUI еще не отвечает по HTTP и не готов для туннеля.")
         if any_tunnel_process(state):
-            return "Туннель уже активен."
+            detected_url = detect_tunnel_url_from_logs((TUNNEL_OUT, TUNNEL_ERR), config["subdomain"]) or expected_tunnel_url(config["subdomain"])
+            if detected_url and cached_public_tunnel_ready(detected_url, force=True):
+                if state.get("last_url") != detected_url:
+                    state["last_url"] = detected_url
+                    state["last_tunnel_error"] = ""
+                    save_state(state)
+                return "Туннель уже активен."
+            if main_tunnel_process_age(state) >= TUNNEL_READY_GRACE_SECONDS:
+                stop_main_tunnel_only()
+                state = load_state()
+            else:
+                return "Туннель запускается."
 
         proc = launch_localtunnel(comfy_root, config["port"], config["subdomain"], TUNNEL_OUT, TUNNEL_ERR)
         state["tunnel_pid"] = proc.pid
+        state["tunnel_started_at"] = time.time()
         state["last_tunnel_error"] = ""
         save_state(state)
         reset_tunnel_retry()
-        ready_url = wait_for_public_tunnel_url(TUNNEL_OUT, config["subdomain"], timeout_seconds=22.0)
+        ready_url = wait_for_public_tunnel_url((TUNNEL_OUT, TUNNEL_ERR), config["subdomain"], timeout_seconds=22.0)
         if ready_url:
             state = load_state()
             state["last_url"] = ready_url
@@ -4129,7 +4191,7 @@ def start_friend_tunnel(link_id: str) -> str:
             )
             schedule_friend_retry(link_id, error_text)
             raise RuntimeError(error_text)
-        detected_url = wait_for_public_tunnel_url(out_path, entry["subdomain"], timeout_seconds=0.35, interval_seconds=0.05)
+        detected_url = wait_for_public_tunnel_url((out_path, err_path), entry["subdomain"], timeout_seconds=0.35, interval_seconds=0.05)
         if detected_url:
             ready_entry = update_friend_link_entry(
                 link_id,
@@ -4252,6 +4314,7 @@ def stop_all() -> str:
 
     state["comfy_pid"] = None
     state["tunnel_pid"] = None
+    state["tunnel_started_at"] = 0.0
     state["last_url"] = ""
     for entry in state.get("friend_links", []):
         entry["pid"] = None
@@ -4296,6 +4359,7 @@ def stop_main_tunnel_only() -> None:
         kill_process_tree(proc)
 
     state["tunnel_pid"] = None
+    state["tunnel_started_at"] = 0.0
     state["last_url"] = ""
     state["last_tunnel_error"] = ""
     state["tunnel_retry_after"] = 0.0
@@ -4329,16 +4393,27 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         comfy_active = comfy_http_ready(config["port"])
     tunnel_active = any_tunnel_process(state)
     main_subdomain = normalize_subdomain(config.get("subdomain", ""))
-    detected_main_url = detect_tunnel_url(TUNNEL_OUT, main_subdomain) if tunnel_active else ""
-    main_url_ready = bool(detected_main_url and cached_public_tunnel_ready(detected_main_url))
-    url = detected_main_url if (tunnel_active and main_url_ready) else ""
-    if tunnel_active:
+    detected_main_url = detect_tunnel_url_from_logs((TUNNEL_OUT, TUNNEL_ERR), main_subdomain) if tunnel_active else ""
+    expected_main_url = expected_tunnel_url(main_subdomain) if tunnel_active else ""
+    candidate_main_url = detected_main_url or expected_main_url
+    main_url_ready = bool(candidate_main_url and cached_public_tunnel_ready(candidate_main_url))
+    url = candidate_main_url if tunnel_active and candidate_main_url else ""
+    tunnel_age = main_tunnel_process_age(state) if tunnel_active else 0.0
+    tunnel_needs_restart = bool(
+        tunnel_active
+        and bool(state.get("desired_running"))
+        and internet_ok
+        and candidate_main_url
+        and not main_url_ready
+        and tunnel_age >= TUNNEL_READY_GRACE_SECONDS
+    )
+    if tunnel_active and main_url_ready:
         reset_tunnel_retry()
-    if url and tunnel_active:
+    if url and tunnel_active and main_url_ready:
         if state.get("last_url") != url:
             state["last_url"] = url
             save_state(state)
-    else:
+    elif not tunnel_active:
         url = ""
     if not comfy_active:
         comfy_active = port_is_open(config["port"])
@@ -4347,8 +4422,12 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
     tunnel_error = state.get("last_tunnel_error", "")
     if not tunnel_error and not tunnel_active:
         tunnel_error = summarize_error_tail(TUNNEL_ERR)
-    if tunnel_active and detected_main_url and not main_url_ready:
-        tunnel_error = tunnel_error or "Ссылка прогревается. Ждем, пока Comfy начнет отвечать через туннель."
+    if tunnel_active and candidate_main_url and not main_url_ready:
+        tunnel_error = tunnel_error or (
+            "LocalTunnel завис без живой ссылки. Перезапускаем туннель."
+            if tunnel_needs_restart
+            else "Ссылка прогревается. Ждем, пока Comfy начнет отвечать через туннель."
+        )
 
     friend_processes = friend_process_map()
     state_changed = False
@@ -4363,8 +4442,10 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         running_pid = running_proc.pid if running_proc else None
         if not running_pid and pid_is_running(entry.get("pid")):
             running_pid = entry.get("pid")
-        detected_url = detect_tunnel_url(out_path, entry["subdomain"])
-        public_ready = bool(detected_url and cached_public_tunnel_ready(detected_url))
+        detected_url = detect_tunnel_url_from_logs((out_path, err_path), entry["subdomain"])
+        expected_url = expected_tunnel_url(entry["subdomain"])
+        candidate_friend_url = detected_url or entry.get("url") or expected_url
+        public_ready = bool(candidate_friend_url and cached_public_tunnel_ready(candidate_friend_url))
         error_text = summarize_error_tail(err_path)
         status = entry.get("status", "starting")
         paused = bool(entry.get("paused", False))
@@ -4408,7 +4489,7 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
                 retry_delay = min(delay * 1.7, MAX_TUNNEL_RETRY_DELAY)
                 state_changed = True
 
-        normalized_url = detected_url or entry.get("url") or friend_url_for_subdomain(entry.get("subdomain", ""))
+        normalized_url = candidate_friend_url or friend_url_for_subdomain(entry.get("subdomain", ""))
         if entry.get("pid") != running_pid:
             entry["pid"] = running_pid
             state_changed = True
@@ -4452,6 +4533,8 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         "internet_ok": internet_ok,
         "comfy_active": comfy_active,
         "tunnel_active": tunnel_active,
+        "url_ready": main_url_ready,
+        "tunnel_needs_restart": tunnel_needs_restart,
         "friend_active": friend_running,
         "friend_links": friend_links,
         "friend_active_count": friend_active_count,
@@ -9077,6 +9160,8 @@ class MainWindow(QWidget):
             "internet_ok": True,
             "comfy_active": False,
             "tunnel_active": False,
+            "url_ready": False,
+            "tunnel_needs_restart": False,
             "friend_active": False,
             "friend_links": [],
             "friend_active_count": 0,
@@ -9378,15 +9463,18 @@ class MainWindow(QWidget):
             return
         if not self.config.get("auto_restart_tunnel", True):
             return
-        if not snap["desired_running"] or not snap["comfy_active"] or snap["tunnel_active"]:
+        if not snap["desired_running"] or not snap["comfy_active"]:
             return
         if snap["retry_in"] > 0:
             return
         if not snap.get("internet_ok", True):
             return
+        if snap["tunnel_active"] and not snap.get("tunnel_needs_restart", False):
+            return
         self.auto_restart_inflight = True
-        mark_tunnel_retry_pending()
-        self.run_background(start_tunnel_if_needed, job_kind="autorestart", set_busy=False, show_toast=False)
+        mark_tunnel_retry_pending(1.0)
+        restart_job = regenerate_main_tunnel if snap["tunnel_active"] else start_tunnel_if_needed
+        self.run_background(restart_job, job_kind="autorestart", set_busy=False, show_toast=False)
 
     def maybe_restore_comfy(self, snap: dict) -> None:
         wants_runtime = snap["desired_running"] or any(not entry.get("paused", False) for entry in snap.get("friend_links", []))
@@ -9476,7 +9564,7 @@ class MainWindow(QWidget):
         self.state_cache = dict(snap.get("state") or self.state_cache)
         self.latest_snap = snap
         url = snap["url"] or "Публичной ссылки пока нет"
-        if snap["url"] and snap["url"] != self.last_url and self.config.get("auto_copy_url", True):
+        if snap["url"] and snap.get("url_ready", False) and snap["url"] != self.last_url and self.config.get("auto_copy_url", True):
             QApplication.clipboard().setText(snap["url"])
             self.show_toast("Ссылка готова и скопирована.")
         if snap["url"]:
@@ -9493,7 +9581,7 @@ class MainWindow(QWidget):
 
         comfy_detail = "Порт 8188 готов" if snap["comfy_active"] else "Ждем запуск"
         if snap["tunnel_active"]:
-            tunnel_detail = self.config["subdomain"]
+            tunnel_detail = self.config["subdomain"] if snap.get("url_ready", False) else "Проверяем ссылку"
         elif snap["desired_running"] and snap["retry_in"] > 0:
             tunnel_detail = f"Повтор через {snap['retry_in']}с"
         elif snap["desired_running"]:
@@ -9534,8 +9622,10 @@ class MainWindow(QWidget):
             footer = "Укажи portable-папку ComfyUI в настройках или держи exe рядом с ней."
         elif (snap["desired_running"] or snap["friend_count"]) and not snap.get("internet_ok", True):
             footer = "Нет интернета. Ждем сеть, чтобы поднять основной и friend tunnels."
-        if snap["comfy_active"] and snap["tunnel_active"]:
+        if snap["comfy_active"] and snap["tunnel_active"] and snap.get("url_ready", False):
             footer = "Все выглядит готовым."
+        elif snap["comfy_active"] and snap["tunnel_active"] and not snap.get("url_ready", False):
+            footer = snap["tunnel_error"] or "LocalTunnel запущен, проверяем публичную ссылку."
         elif snap["friend_count"]:
             footer = "Friend links прогреваются." if snap["friend_active_count"] < snap["friend_count"] else "Friend links готовы к отправке."
         elif snap["desired_running"] and not snap["tunnel_active"] and snap["retry_in"] > 0:
