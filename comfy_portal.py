@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -978,6 +978,10 @@ def normalize_friend_entry(entry: dict | None) -> dict | None:
     except Exception:
         created_at = time.time()
     try:
+        started_at = float(entry.get("started_at", created_at) or created_at)
+    except Exception:
+        started_at = created_at
+    try:
         retry_after = float(entry.get("retry_after", 0.0) or 0.0)
     except Exception:
         retry_after = 0.0
@@ -994,6 +998,7 @@ def normalize_friend_entry(entry: dict | None) -> dict | None:
         "paused": bool(entry.get("paused", False)),
         "error": str(entry.get("error", "")).strip(),
         "created_at": created_at,
+        "started_at": started_at,
         "retry_after": retry_after,
         "retry_delay": retry_delay,
     }
@@ -1030,6 +1035,7 @@ def normalize_friend_links(entries: list[dict] | None, legacy_state: dict | None
                 "paused": False,
                 "error": "",
                 "created_at": time.time(),
+                "started_at": 0.0,
                 "retry_after": 0.0,
                 "retry_delay": DEFAULT_TUNNEL_RETRY_DELAY,
             }
@@ -3499,6 +3505,7 @@ def schedule_friend_retry(link_id: str, error_text: str = "") -> None:
         current["status"] = "error"
         current["paused"] = False
         current["pid"] = None
+        current["started_at"] = 0.0
         if error_text:
             current["error"] = error_text
 
@@ -3698,6 +3705,30 @@ def main_tunnel_process_age(state: dict | None = None) -> float:
     except Exception:
         started_at = 0.0
     return max(0.0, now - started_at) if started_at else 0.0
+
+
+def friend_tunnel_process_age(entry: dict, running_proc: psutil.Process | None = None) -> float:
+    now = time.time()
+    ages: list[float] = []
+    proc = running_proc
+    if proc is None and entry.get("pid"):
+        try:
+            proc = psutil.Process(int(entry.get("pid")))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+            proc = None
+    if proc is not None:
+        try:
+            ages.append(max(0.0, now - proc.create_time()))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+            pass
+    for key in ("started_at", "created_at"):
+        try:
+            started_at = float(entry.get(key, 0.0) or 0.0)
+        except Exception:
+            started_at = 0.0
+        if started_at:
+            ages.append(max(0.0, now - started_at))
+    return max(ages) if ages else 0.0
 
 
 def any_friend_tunnel_process(state: dict | None = None) -> bool:
@@ -4139,15 +4170,69 @@ def start_friend_tunnel(link_id: str) -> str:
     entry = find_friend_link_entry(state, link_id)
     if not entry:
         raise RuntimeError("Friend link уже удален.")
-    if pid_is_running(entry.get("pid")):
-        return f"Friend link {entry['subdomain']} уже активен."
+    out_path, err_path = friend_log_paths(entry["id"])
+    running_proc = None
+    if entry.get("pid"):
+        try:
+            running_proc = psutil.Process(int(entry.get("pid")))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+            running_proc = None
+    if running_proc is None:
+        running_proc = friend_process_map().get(entry["subdomain"])
+    if running_proc is not None:
+        detected_url = detect_tunnel_url_from_logs((out_path, err_path), entry["subdomain"]) or expected_tunnel_url(entry["subdomain"])
+        if detected_url and cached_public_tunnel_ready(detected_url, force=True):
+            update_friend_link_entry(
+                link_id,
+                lambda current, _state: current.update(
+                    {
+                        "pid": running_proc.pid,
+                        "url": detected_url,
+                        "status": "active",
+                        "paused": False,
+                        "error": "",
+                        "retry_after": 0.0,
+                        "retry_delay": DEFAULT_TUNNEL_RETRY_DELAY,
+                    }
+                ),
+            )
+            return f"Friend link {entry['subdomain']} уже активен."
+        if friend_tunnel_process_age(entry, running_proc) < TUNNEL_READY_GRACE_SECONDS:
+            update_friend_link_entry(
+                link_id,
+                lambda current, _state: current.update(
+                    {
+                        "pid": running_proc.pid,
+                        "url": detected_url,
+                        "status": "starting",
+                        "paused": False,
+                        "error": "",
+                    }
+                ),
+            )
+            return f"Friend link {entry['subdomain']} запускается."
+        kill_process_tree(running_proc)
+        update_friend_link_entry(
+            link_id,
+            lambda current, _state: current.update(
+                {
+                    "pid": None,
+                    "status": "starting",
+                    "paused": False,
+                    "error": "",
+                    "started_at": 0.0,
+                }
+            ),
+        )
+        cached_process_scan("friend_tunnel", force=True)
+        cached_friend_process_map(force=True)
 
     if not port_is_open(config["port"]):
         start_comfy_if_needed()
         if not wait_for_comfy_ready(config["port"]):
             raise RuntimeError("ComfyUI не ответил вовремя.")
 
-    out_path, err_path = friend_log_paths(entry["id"])
+    started_at = time.time()
     proc = launch_localtunnel(comfy_root, config["port"], entry["subdomain"], out_path, err_path)
     updated_entry = update_friend_link_entry(
         link_id,
@@ -4158,7 +4243,8 @@ def start_friend_tunnel(link_id: str) -> str:
                 "paused": False,
                 "error": "",
                 "retry_after": 0.0,
-                "created_at": time.time(),
+                "created_at": started_at,
+                "started_at": started_at,
             }
         ),
     )
@@ -4217,7 +4303,7 @@ def start_friend_tunnel(link_id: str) -> str:
         lambda current, _state: current.update(
             {
                 "pid": proc.pid if pid_is_running(proc.pid) else None,
-                "status": "active" if pid_is_running(proc.pid) else "error",
+                "status": "starting" if pid_is_running(proc.pid) else "error",
                 "paused": False,
                 "error": "" if pid_is_running(proc.pid) else (summarize_error_tail(err_path) or "Friend link не ответил вовремя."),
                 "retry_after": 0.0 if pid_is_running(proc.pid) else current.get("retry_after", 0.0),
@@ -4454,17 +4540,26 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         retry_delay = float(entry.get("retry_delay", DEFAULT_TUNNEL_RETRY_DELAY) or DEFAULT_TUNNEL_RETRY_DELAY)
         retry_in = max(0, int(retry_after - now))
 
-        created_age = now - float(entry.get("created_at", now) or now)
         if running_pid:
-            status = "active" if public_ready else "starting"
             paused = False
             friend_running = True
-            if status == "active":
+            if public_ready:
+                status = "active"
                 friend_active_count += 1
-            if retry_after != 0.0 or retry_delay != DEFAULT_TUNNEL_RETRY_DELAY:
-                retry_after = 0.0
-                retry_delay = DEFAULT_TUNNEL_RETRY_DELAY
-                state_changed = True
+                if retry_after != 0.0 or retry_delay != DEFAULT_TUNNEL_RETRY_DELAY or error_text:
+                    retry_after = 0.0
+                    retry_delay = DEFAULT_TUNNEL_RETRY_DELAY
+                    error_text = ""
+                    state_changed = True
+            elif friend_tunnel_process_age(entry, running_proc) >= TUNNEL_READY_GRACE_SECONDS:
+                status = "error"
+                error_text = error_text or "Friend link завис без живой ссылки. Перезапускаем туннель."
+                if retry_after <= now:
+                    retry_after = now + 1.0
+                    retry_delay = DEFAULT_TUNNEL_RETRY_DELAY
+                    state_changed = True
+            else:
+                status = "starting"
         elif paused:
             status = "paused"
             error_text = ""
