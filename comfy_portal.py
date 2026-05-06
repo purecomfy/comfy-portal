@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.1.9"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -90,6 +90,7 @@ DISCOVER_COMFY_DEEP_BUDGET_SECONDS = 4.5
 LOG_VIEW_POLL_MS = 550
 PUBLIC_TUNNEL_CACHE_TTL = 18.0
 TUNNEL_READY_GRACE_SECONDS = 38.0
+FRIEND_TUNNEL_READY_SECONDS = 2.5
 UPDATE_CHECK_CACHE_TTL = 900.0
 OVERLAY_ANIMATION_MS = 180
 PANEL_SLIDE_OFFSET = 6
@@ -3731,6 +3732,14 @@ def friend_tunnel_process_age(entry: dict, running_proc: psutil.Process | None =
     return max(ages) if ages else 0.0
 
 
+def friend_tunnel_ready(entry: dict, running_proc: psutil.Process | None, detected_url: str, candidate_url: str, error_text: str, port: int) -> bool:
+    if running_proc is None or not candidate_url or error_text:
+        return False
+    if detected_url:
+        return True
+    return port_is_open(port) and friend_tunnel_process_age(entry, running_proc) >= FRIEND_TUNNEL_READY_SECONDS
+
+
 def any_friend_tunnel_process(state: dict | None = None) -> bool:
     state = state or load_state()
     for entry in state.get("friend_links", []):
@@ -4066,6 +4075,7 @@ def reserve_friend_link(custom_subdomain: str | None = None) -> dict:
             "status": "starting",
             "error": "",
             "created_at": time.time(),
+            "started_at": 0.0,
             "retry_after": 0.0,
             "retry_delay": DEFAULT_TUNNEL_RETRY_DELAY,
         }
@@ -4180,14 +4190,16 @@ def start_friend_tunnel(link_id: str) -> str:
     if running_proc is None:
         running_proc = friend_process_map().get(entry["subdomain"])
     if running_proc is not None:
-        detected_url = detect_tunnel_url_from_logs((out_path, err_path), entry["subdomain"]) or expected_tunnel_url(entry["subdomain"])
-        if detected_url and cached_public_tunnel_ready(detected_url, force=True):
+        detected_url = detect_tunnel_url_from_logs((out_path, err_path), entry["subdomain"])
+        candidate_url = detected_url or expected_tunnel_url(entry["subdomain"])
+        error_text = summarize_error_tail(err_path)
+        if friend_tunnel_ready(entry, running_proc, detected_url, candidate_url, error_text, config["port"]):
             update_friend_link_entry(
                 link_id,
                 lambda current, _state: current.update(
                     {
                         "pid": running_proc.pid,
-                        "url": detected_url,
+                        "url": candidate_url,
                         "status": "active",
                         "paused": False,
                         "error": "",
@@ -4203,10 +4215,10 @@ def start_friend_tunnel(link_id: str) -> str:
                 lambda current, _state: current.update(
                     {
                         "pid": running_proc.pid,
-                        "url": detected_url,
+                        "url": candidate_url,
                         "status": "starting",
                         "paused": False,
-                        "error": "",
+                        "error": error_text,
                     }
                 ),
             )
@@ -4277,13 +4289,19 @@ def start_friend_tunnel(link_id: str) -> str:
             )
             schedule_friend_retry(link_id, error_text)
             raise RuntimeError(error_text)
-        detected_url = wait_for_public_tunnel_url((out_path, err_path), entry["subdomain"], timeout_seconds=0.35, interval_seconds=0.05)
-        if detected_url:
+        detected_url = detect_tunnel_url_from_logs((out_path, err_path), entry["subdomain"])
+        candidate_url = detected_url or expected_tunnel_url(entry["subdomain"])
+        error_text = summarize_error_tail(err_path)
+        try:
+            current_proc = psutil.Process(proc.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            current_proc = None
+        if friend_tunnel_ready({**entry, "started_at": started_at, "pid": proc.pid}, current_proc, detected_url, candidate_url, error_text, config["port"]):
             ready_entry = update_friend_link_entry(
                 link_id,
                 lambda current, _state: current.update(
                     {
-                        "url": detected_url,
+                        "url": candidate_url,
                         "status": "active",
                         "paused": False,
                         "error": "",
@@ -4528,11 +4546,15 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         running_pid = running_proc.pid if running_proc else None
         if not running_pid and pid_is_running(entry.get("pid")):
             running_pid = entry.get("pid")
+            try:
+                running_proc = psutil.Process(int(running_pid))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+                running_proc = None
         detected_url = detect_tunnel_url_from_logs((out_path, err_path), entry["subdomain"])
         expected_url = expected_tunnel_url(entry["subdomain"])
         candidate_friend_url = detected_url or entry.get("url") or expected_url
-        public_ready = bool(candidate_friend_url and cached_public_tunnel_ready(candidate_friend_url))
         error_text = summarize_error_tail(err_path)
+        public_ready = friend_tunnel_ready(entry, running_proc, detected_url, candidate_friend_url, error_text, config["port"])
         status = entry.get("status", "starting")
         paused = bool(entry.get("paused", False))
         now = time.time()
