@@ -6,6 +6,8 @@ build/
 dist/
 cxfreeze_dist/
 nuitka_dist/
+release_build/
+release_assets/
 *.egg-info/
 .venv/
 venv/

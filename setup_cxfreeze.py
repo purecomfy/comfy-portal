@@ -7,7 +7,7 @@ from cx_Freeze import Executable, setup
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
 TOOLS = ROOT / "tools"
-PYTHON_HOME = Path(r"C:\Users\14\AppData\Local\Programs\Python\Python314")
+PYTHON_HOME = Path(sys.base_prefix)
 
 
 def build_output_dir() -> Path:
@@ -138,7 +138,7 @@ executables = [
 
 setup(
     name="Comfy Portal",
-    version="1.1.9",
+    version="1.1.10",
     description="ComfyUI launcher and tunnel manager",
     options={"build_exe": build_exe_options},
     executables=executables,

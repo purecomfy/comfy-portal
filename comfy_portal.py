@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.9"
+APP_VERSION = "1.1.10"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -83,6 +83,10 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_PROGRESS_INTERVAL = 1.0
 DEFAULT_TUNNEL_RETRY_DELAY = 5.0
 MAX_TUNNEL_RETRY_DELAY = 45.0
+DEFAULT_TUNNEL_PROVIDER = "localtunnel"
+TUNNEL_PROVIDER_LOCALTUNNEL = "localtunnel"
+TUNNEL_PROVIDER_CLOUDFLARE = "cloudflare"
+TUNNEL_PROVIDERS = (TUNNEL_PROVIDER_LOCALTUNNEL, TUNNEL_PROVIDER_CLOUDFLARE)
 MAX_FRIEND_LINKS = 5
 DISCOVER_COMFY_CACHE_TTL = 90.0
 DISCOVER_COMFY_BUDGET_SECONDS = 2.8
@@ -92,10 +96,10 @@ PUBLIC_TUNNEL_CACHE_TTL = 18.0
 TUNNEL_READY_GRACE_SECONDS = 38.0
 FRIEND_TUNNEL_READY_SECONDS = 2.5
 UPDATE_CHECK_CACHE_TTL = 900.0
-OVERLAY_ANIMATION_MS = 180
+OVERLAY_ANIMATION_MS = 260
 PANEL_SLIDE_OFFSET = 6
-BACKDROP_FADE_MS = 220
-PAGE_FADE_MS = 170
+BACKDROP_FADE_MS = 300
+PAGE_FADE_MS = 230
 TELEGRAM_CHANNEL_URL = "https://t.me/ComfyUIGuide"
 TELEGRAM_BRAND_SIZE = 38
 GITHUB_BRAND_SIZE = 38
@@ -111,6 +115,8 @@ COMFY_PACKAGE_MARKER_NAME = ".comfy_portal_source.json"
 CUSTOM_COMFY_ARCHIVE_NAME = "ComfyPortal.custom_comfy.7z"
 CUSTOM_COMFY_URL_FILENAME = "ComfyPortal.custom_comfy_url.txt"
 COMFYUI_MANAGER_ARCHIVE_URL = "https://github.com/ltdrdata/ComfyUI-Manager/archive/refs/heads/main.zip"
+CLOUDFLARED_WINDOWS_AMD64_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+CLOUDFLARED_TOOL_NAME = "cloudflared.exe"
 DOWNLOAD_USER_AGENT = f"ComfyPortal/{APP_VERSION}"
 BUNDLED_CIVITAI_KEYS_B64 = (
     "NTY0MDAxNDRlMTlkZGFjZDMxZjcwNTNkMTZkMzI5Y2M=",
@@ -613,6 +619,7 @@ def default_config() -> dict:
     return {
         "port": 8188,
         "subdomain": "comfylocal5618",
+        "tunnel_provider": DEFAULT_TUNNEL_PROVIDER,
         "theme": "light",
         "launch_mode": DEFAULT_LAUNCH_MODE,
         "extra_launch_args": DEFAULT_EXTRA_LAUNCH_ARGS,
@@ -750,6 +757,7 @@ def load_config() -> dict:
     legacy_keys = normalize_api_key_items(existing_raw.get("civitai_api_key", "")) + normalize_api_key_items(existing_raw.get("civitai_api_keys", ""))
     stored_keys = decode_api_keys_b64(existing_raw.get("civitai_api_keys_b64", []))
     config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys)
+    config["tunnel_provider"] = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
     config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
     if "extra_launch_args" not in existing_raw:
         config["extra_launch_args"] = DEFAULT_EXTRA_LAUNCH_ARGS
@@ -773,12 +781,42 @@ def save_config(config: dict) -> None:
     stored_keys = decode_api_keys_b64(config.get("civitai_api_keys_b64", []))
     raw_keys = normalize_api_key_items(config.pop("civitai_api_keys", ""))
     config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys + raw_keys)
+    config["tunnel_provider"] = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
     config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
     config["extra_launch_args"] = normalize_extra_launch_args(config.get("extra_launch_args", ""))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
     config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
     write_json(CONFIG_PATH, config)
     invalidate_setup_status_cache()
+
+
+def normalize_tunnel_provider(value: object) -> str:
+    clean = str(value or "").strip().lower().replace("-", "_")
+    legacy_map = {
+        "lt": TUNNEL_PROVIDER_LOCALTUNNEL,
+        "local": TUNNEL_PROVIDER_LOCALTUNNEL,
+        "local_tunnel": TUNNEL_PROVIDER_LOCALTUNNEL,
+        "localtunnel": TUNNEL_PROVIDER_LOCALTUNNEL,
+        "loca": TUNNEL_PROVIDER_LOCALTUNNEL,
+        "loca_lt": TUNNEL_PROVIDER_LOCALTUNNEL,
+        "cf": TUNNEL_PROVIDER_CLOUDFLARE,
+        "cloudflare": TUNNEL_PROVIDER_CLOUDFLARE,
+        "cloudflared": TUNNEL_PROVIDER_CLOUDFLARE,
+    }
+    clean = legacy_map.get(clean, clean)
+    return clean if clean in TUNNEL_PROVIDERS else DEFAULT_TUNNEL_PROVIDER
+
+
+def tunnel_provider_title(provider: object) -> str:
+    provider = normalize_tunnel_provider(provider)
+    return "LocalTunnel" if provider == TUNNEL_PROVIDER_LOCALTUNNEL else "Cloudflare"
+
+
+def tunnel_provider_description(provider: object) -> str:
+    provider = normalize_tunnel_provider(provider)
+    if provider == TUNNEL_PROVIDER_LOCALTUNNEL:
+        return "LocalTunnel: можно задать свой subdomain, но loca.lt может быть нестабилен."
+    return "Cloudflare: ссылка выдается случайная через trycloudflare.com, зато обычно стабильнее."
 
 
 def normalize_launch_mode(value: str) -> str:
@@ -827,9 +865,25 @@ def comfy_launch_command(root: Path, config: dict | None = None) -> list[str]:
     config = config or load_config()
     spec = comfy_launch_spec(config)
     args = list(spec["args"])
-    for extra_arg in parse_extra_launch_args(config.get("extra_launch_args", "")):
+    extra_args = parse_extra_launch_args(config.get("extra_launch_args", ""))
+    skip_next = False
+    for index, extra_arg in enumerate(extra_args):
+        if skip_next:
+            skip_next = False
+            continue
         if extra_arg not in args:
             args.append(extra_arg)
+            continue
+        if extra_arg in {"--listen", "--port"} and index + 1 < len(extra_args) and not str(extra_args[index + 1]).startswith("--"):
+            skip_next = True
+    if "--listen" in args:
+        listen_index = args.index("--listen")
+        if listen_index == len(args) - 1 or str(args[listen_index + 1]).startswith("--"):
+            args.insert(listen_index + 1, "0.0.0.0")
+    else:
+        args.extend(["--listen", "0.0.0.0"])
+    if "--port" not in args:
+        args.extend(["--port", str(int(config.get("port", 8188)))])
     for required_arg in REQUIRED_COMFY_ARGS:
         if required_arg not in args:
             args.append(required_arg)
@@ -843,6 +897,10 @@ def comfy_launch_command(root: Path, config: dict | None = None) -> list[str]:
 
 def friend_url_for_subdomain(subdomain: str) -> str:
     return f"https://{subdomain}.loca.lt" if subdomain else ""
+
+
+def is_cloudflare_tunnel_url(url: str) -> bool:
+    return bool(re.fullmatch(r"https://[a-z0-9-]+\.trycloudflare\.com", str(url or "").strip().rstrip("/"), flags=re.IGNORECASE))
 
 
 def custom_comfy_archive_candidates() -> list[Path]:
@@ -3611,6 +3669,7 @@ def find_matching_processes(kind: str) -> list[psutil.Process]:
     config = load_config() if kind in {"tunnel", "friend_tunnel"} else None
     state = load_state() if kind in {"tunnel", "friend_tunnel"} else None
     main_subdomain = normalize_subdomain((config or {}).get("subdomain", ""))
+    main_port = int((config or {}).get("port", 8188) or 8188)
     friend_subdomains = friend_subdomains_from_state(state)
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
@@ -3627,7 +3686,10 @@ def find_matching_processes(kind: str) -> list[psutil.Process]:
                 matches.append(proc)
         elif kind == "tunnel":
             is_localtunnel = "localtunnel" in cmdline or (name.startswith("node") and "loca.lt" in cmdline)
+            is_cloudflared = name.startswith("cloudflared") and "tunnel" in cmdline and "--url" in cmdline and f":{main_port}" in cmdline
             if is_localtunnel and main_subdomain and tunnel_subdomain == main_subdomain:
+                matches.append(proc)
+            elif is_cloudflared:
                 matches.append(proc)
         elif kind == "friend_tunnel":
             is_localtunnel = "localtunnel" in cmdline or (name.startswith("node") and "loca.lt" in cmdline)
@@ -3813,9 +3875,10 @@ def detect_tunnel_url(path: Path, preferred_subdomain: str = "") -> str:
     if not path.exists():
         return ""
     content = read_text_tail(path, max_bytes=16384)
-    matches = re.findall(r"https://[a-z0-9-]+\.loca\.lt", content)
+    matches = re.findall(r"https://[a-z0-9-]+\.(?:loca\.lt|trycloudflare\.com)", content, flags=re.IGNORECASE)
     if not matches:
         return ""
+    matches = [url.rstrip("/") for url in matches]
     preferred = sanitize_subdomain(preferred_subdomain)
     if preferred:
         for url in reversed(matches):
@@ -3837,10 +3900,20 @@ def expected_tunnel_url(subdomain: str) -> str:
     return friend_url_for_subdomain(normalize_subdomain(subdomain))
 
 
+def expected_main_tunnel_url(config: dict | None = None) -> str:
+    config = config or load_config()
+    provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+    if provider == TUNNEL_PROVIDER_LOCALTUNNEL:
+        return expected_tunnel_url(str(config.get("subdomain", "")))
+    return ""
+
+
 def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
     clean_url = str(url or "").strip().rstrip("/")
     if not clean_url:
         return False
+    if is_cloudflare_tunnel_url(clean_url):
+        timeout_seconds = max(timeout_seconds, 8.0)
     headers = {"User-Agent": DOWNLOAD_USER_AGENT}
     probes = (
         (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
@@ -3874,12 +3947,20 @@ def cached_public_tunnel_ready(url: str, force: bool = False) -> bool:
     return ready
 
 
-def wait_for_public_tunnel_url(log_path: Path | tuple[Path, ...] | list[Path], subdomain: str, timeout_seconds: float = 20.0, interval_seconds: float = 0.35) -> str:
+def wait_for_public_tunnel_url(
+    log_path: Path | tuple[Path, ...] | list[Path],
+    subdomain: str,
+    timeout_seconds: float = 20.0,
+    interval_seconds: float = 0.35,
+    use_expected_fallback: bool = True,
+) -> str:
     log_paths = tuple(log_path) if isinstance(log_path, (tuple, list)) else (log_path,)
     deadline = time.time() + timeout_seconds
     last_detected = ""
     while time.time() < deadline:
-        detected = detect_tunnel_url_from_logs(log_paths, subdomain) or expected_tunnel_url(subdomain)
+        detected = detect_tunnel_url_from_logs(log_paths, subdomain)
+        if not detected and use_expected_fallback:
+            detected = expected_tunnel_url(subdomain)
         if detected:
             last_detected = detected
             if cached_public_tunnel_ready(detected, force=True):
@@ -3966,6 +4047,11 @@ def summarize_error_tail(path: Path) -> str:
     if not text:
         return ""
     lowered_text = text.lower()
+    if "cloudflared" in lowered_text:
+        if "is not recognized as an internal or external command" in lowered_text or "не является внутренней или внешней" in lowered_text:
+            return "Не удалось запустить cloudflared. Установи Cloudflare Tunnel или положи cloudflared.exe в tools."
+        if "failed" in lowered_text or "error" in lowered_text or "unable" in lowered_text:
+            return "Cloudflare Tunnel не смог подняться: " + tail_text(path, lines=1)
     if "npx.cmd" in lowered_text or "npx " in lowered_text:
         return "Не удалось запустить localtunnel через npx."
     def normalize_error_line(value: str) -> str:
@@ -3985,6 +4071,29 @@ def summarize_error_tail(path: Path) -> str:
     return lines[-1]
 
 
+def tunnel_not_ready_message(config: dict, url: str, tunnel_active: bool, url_ready: bool, error_text: str = "") -> str:
+    if url_ready:
+        return ""
+    provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+    port = int(config.get("port", 8188) or 8188)
+    clean_error = str(error_text or "").strip()
+    if clean_error:
+        return clean_error
+    if not internet_is_available():
+        return "Нет интернета. Туннель запустится после восстановления сети."
+    if not comfy_http_ready(port):
+        return f"ComfyUI не отвечает на локальном порту {port}. Проверь запуск Comfy и аргументы --listen 0.0.0.0 --port {port}."
+    if not tunnel_active:
+        return f"{tunnel_provider_title(provider)} еще не запущен."
+    if not url:
+        if provider == TUNNEL_PROVIDER_CLOUDFLARE:
+            return "Cloudflare Tunnel запущен, но еще не выдал trycloudflare.com ссылку."
+        return "LocalTunnel запущен, но еще не выдал loca.lt ссылку."
+    if provider == TUNNEL_PROVIDER_CLOUDFLARE:
+        return "Ссылка Cloudflare есть, но ComfyUI по ней не отвечает. Проверяем порт и публичный маршрут."
+    return "Ссылка LocalTunnel есть, но ComfyUI по ней не отвечает. Часто это проблема loca.lt или локального порта."
+
+
 def npx_executable() -> str:
     return shutil.which("npx.cmd") or shutil.which("npx") or "npx"
 
@@ -4001,6 +4110,59 @@ def npx_launch_prefix() -> list[str]:
             if candidate.exists():
                 return [str(Path(node_path).resolve()), str(candidate.resolve())]
     return [str(npx_path)]
+
+
+def cloudflared_executable() -> str:
+    candidates = [resolve_tool_path(CLOUDFLARED_TOOL_NAME)]
+    for found in (shutil.which("cloudflared.exe"), shutil.which("cloudflared")):
+        if found:
+            candidates.append(Path(found))
+    candidates.extend(
+        [
+            Path("C:/Program Files (x86)/cloudflared/cloudflared.exe"),
+            Path("C:/Program Files/cloudflared/cloudflared.exe"),
+        ]
+    )
+    for candidate in candidates:
+        try:
+            if candidate and candidate.exists():
+                return str(candidate.resolve())
+        except Exception:
+            continue
+    return "cloudflared"
+
+
+def cloudflared_installed_path() -> Path | None:
+    exe = cloudflared_executable()
+    if exe == "cloudflared":
+        return None
+    path = Path(exe)
+    return path if path.exists() else None
+
+
+def ensure_cloudflared_available() -> Path:
+    existing = cloudflared_installed_path()
+    if existing:
+        return existing
+    tools_dir = get_base_dir() / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    destination = tools_dir / CLOUDFLARED_TOOL_NAME
+    temp_path = destination.with_suffix(".download")
+    try:
+        if temp_path.exists():
+            temp_path.unlink()
+        download_file(CLOUDFLARED_WINDOWS_AMD64_URL, temp_path)
+        if not temp_path.exists() or temp_path.stat().st_size < 1024 * 1024:
+            raise RuntimeError("Cloudflare Tunnel скачался некорректно.")
+        os.replace(temp_path, destination)
+    except Exception as exc:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except Exception:
+            pass
+        raise RuntimeError(f"Не удалось скачать cloudflared.exe: {exc}") from exc
+    return destination
 
 
 def wait_for_port(port: int, timeout_seconds: float = 90.0, interval_seconds: float = 0.6) -> bool:
@@ -4040,6 +4202,64 @@ def launch_localtunnel(comfy_root: Path, port: int, subdomain: str, out_path: Pa
         out.close()
         err.close()
     return proc
+
+
+def launch_cloudflare_tunnel(comfy_root: Path, port: int, out_path: Path, err_path: Path) -> subprocess.Popen:
+    clear_logs(out_path, err_path)
+    out = open(out_path, "w", encoding="utf-8")
+    err = open(err_path, "w", encoding="utf-8")
+    command = [
+        cloudflared_executable(),
+        "tunnel",
+        "--url",
+        f"http://127.0.0.1:{int(port)}",
+        "--protocol",
+        "http2",
+        "--no-autoupdate",
+    ]
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(comfy_root),
+            stdout=out,
+            stderr=err,
+            shell=False,
+            **hidden_subprocess_kwargs(new_process_group=True),
+        )
+    finally:
+        out.close()
+        err.close()
+    return proc
+
+
+def launch_tunnel(provider: str, comfy_root: Path, port: int, subdomain: str, out_path: Path, err_path: Path) -> subprocess.Popen:
+    provider = normalize_tunnel_provider(provider)
+    if provider == TUNNEL_PROVIDER_LOCALTUNNEL:
+        return launch_localtunnel(comfy_root, port, subdomain, out_path, err_path)
+    return launch_cloudflare_tunnel(comfy_root, port, out_path, err_path)
+
+
+def main_tunnel_detected_url(config: dict | None = None, active: bool = True) -> str:
+    if not active:
+        return ""
+    config = config or load_config()
+    provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+    preferred = config.get("subdomain", "") if provider == TUNNEL_PROVIDER_LOCALTUNNEL else ""
+    return detect_tunnel_url_from_logs((TUNNEL_OUT, TUNNEL_ERR), preferred)
+
+
+def main_tunnel_candidate_url(config: dict | None = None, state: dict | None = None, active: bool = True) -> str:
+    if not active:
+        return ""
+    config = config or load_config()
+    state = state or load_state()
+    detected = main_tunnel_detected_url(config, active=active)
+    if detected:
+        return detected
+    fallback = expected_main_tunnel_url(config)
+    if fallback:
+        return fallback
+    return str(state.get("last_url", "") or "").strip()
 
 
 def find_friend_link_entry(state: dict, link_id: str) -> dict | None:
@@ -4140,7 +4360,7 @@ def start_tunnel_if_needed() -> str:
         if not wait_for_comfy_ready(config["port"], timeout_seconds=30.0, interval_seconds=0.5):
             raise RuntimeError("ComfyUI еще не отвечает по HTTP и не готов для туннеля.")
         if any_tunnel_process(state):
-            detected_url = detect_tunnel_url_from_logs((TUNNEL_OUT, TUNNEL_ERR), config["subdomain"]) or expected_tunnel_url(config["subdomain"])
+            detected_url = main_tunnel_candidate_url(config, state, active=True)
             if detected_url and cached_public_tunnel_ready(detected_url, force=True):
                 if state.get("last_url") != detected_url:
                     state["last_url"] = detected_url
@@ -4153,13 +4373,21 @@ def start_tunnel_if_needed() -> str:
             else:
                 return "Туннель запускается."
 
-        proc = launch_localtunnel(comfy_root, config["port"], config["subdomain"], TUNNEL_OUT, TUNNEL_ERR)
+        provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        if provider == TUNNEL_PROVIDER_CLOUDFLARE:
+            ensure_cloudflared_available()
+        proc = launch_tunnel(provider, comfy_root, config["port"], config["subdomain"], TUNNEL_OUT, TUNNEL_ERR)
         state["tunnel_pid"] = proc.pid
         state["tunnel_started_at"] = time.time()
         state["last_tunnel_error"] = ""
         save_state(state)
         reset_tunnel_retry()
-        ready_url = wait_for_public_tunnel_url((TUNNEL_OUT, TUNNEL_ERR), config["subdomain"], timeout_seconds=22.0)
+        ready_url = wait_for_public_tunnel_url(
+            (TUNNEL_OUT, TUNNEL_ERR),
+            config["subdomain"] if provider == TUNNEL_PROVIDER_LOCALTUNNEL else "",
+            timeout_seconds=35.0 if provider == TUNNEL_PROVIDER_CLOUDFLARE else 22.0,
+            use_expected_fallback=(provider == TUNNEL_PROVIDER_LOCALTUNNEL),
+        )
         if ready_url:
             state = load_state()
             state["last_url"] = ready_url
@@ -4483,7 +4711,14 @@ def regenerate_main_tunnel() -> str:
         if not wait_for_comfy_ready(config["port"]):
             raise RuntimeError("ComfyUI не ответил вовремя.")
     start_tunnel_if_needed()
-    return f"Ссылка обновляется для {normalize_subdomain(config['subdomain'])}."
+    return "Ссылка туннеля обновляется."
+
+
+def repair_launch() -> str:
+    stop_all()
+    clear_logs(COMFY_OUT, COMFY_ERR, TUNNEL_OUT, TUNNEL_ERR)
+    reset_tunnel_retry()
+    return start_all()
 
 
 def runtime_snapshot(include_logs: bool = False) -> dict:
@@ -4497,9 +4732,8 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         comfy_active = comfy_http_ready(config["port"])
     tunnel_active = any_tunnel_process(state)
     main_subdomain = normalize_subdomain(config.get("subdomain", ""))
-    detected_main_url = detect_tunnel_url_from_logs((TUNNEL_OUT, TUNNEL_ERR), main_subdomain) if tunnel_active else ""
-    expected_main_url = expected_tunnel_url(main_subdomain) if tunnel_active else ""
-    candidate_main_url = detected_main_url or expected_main_url
+    tunnel_provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+    candidate_main_url = main_tunnel_candidate_url(config, state, active=tunnel_active)
     main_url_ready = bool(candidate_main_url and cached_public_tunnel_ready(candidate_main_url))
     url = candidate_main_url if tunnel_active and candidate_main_url else ""
     tunnel_age = main_tunnel_process_age(state) if tunnel_active else 0.0
@@ -4528,9 +4762,16 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         tunnel_error = summarize_error_tail(TUNNEL_ERR)
     if tunnel_active and candidate_main_url and not main_url_ready:
         tunnel_error = tunnel_error or (
-            "LocalTunnel завис без живой ссылки. Перезапускаем туннель."
+            "Туннель завис без живой ссылки. Перезапускаем туннель."
             if tunnel_needs_restart
             else "Ссылка прогревается. Ждем, пока Comfy начнет отвечать через туннель."
+        )
+
+    if tunnel_active and not main_url_ready:
+        tunnel_error = (
+            "Туннель завис без живой ссылки. Перезапускаем туннель."
+            if tunnel_needs_restart
+            else tunnel_not_ready_message(config, candidate_main_url, tunnel_active, main_url_ready, tunnel_error)
         )
 
     friend_processes = friend_process_map()
@@ -4703,37 +4944,37 @@ class Theme:
 
 THEMES = {
     "light": Theme(
-        app_bg="#f3f7fd",
-        panel_bg="#ffffff",
-        panel_alt="#eef3fb",
-        surface="#ffffff",
-        surface_alt="#f4f7fc",
-        border="#dce6f2",
+        app_bg="qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fbfcff, stop:0.55 #edf4ff, stop:1 #fff1e8)",
+        panel_bg="rgba(255, 255, 255, 224)",
+        panel_alt="rgba(255, 255, 255, 176)",
+        surface="rgba(255, 255, 255, 202)",
+        surface_alt="rgba(232, 240, 254, 180)",
+        border="rgba(17, 24, 39, 24)",
         text="#111827",
         muted="#6b7280",
-        green="#16a34a",
-        red="#ef4444",
-        blue="#2563ff",
-        blue_hover="#1f4fd1",
-        soft_btn="#eaf0fb",
-        soft_btn_hover="#dce7fa",
-        shadow=QColor(36, 56, 92, 28),
+        green="#34a853",
+        red="#ea4335",
+        blue="#1a73e8",
+        blue_hover="#185abc",
+        soft_btn="#e8f0fe",
+        soft_btn_hover="#d2e3fc",
+        shadow=QColor(60, 64, 67, 28),
     ),
     "dark": Theme(
-        app_bg="#050608",
-        panel_bg="#0c0e12",
-        panel_alt="#13161b",
-        surface="#0f1115",
-        surface_alt="#171b21",
-        border="#222831",
+        app_bg="qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #070a12, stop:0.58 #101827, stop:1 #1a1424)",
+        panel_bg="rgba(22, 26, 34, 224)",
+        panel_alt="rgba(30, 36, 48, 174)",
+        surface="rgba(25, 29, 38, 204)",
+        surface_alt="rgba(32, 41, 56, 176)",
+        border="rgba(255, 255, 255, 26)",
         text="#f5f7fa",
-        muted="#8d97a6",
-        green="#22c55e",
-        red="#fb5a67",
-        blue="#3b82f6",
-        blue_hover="#2563eb",
-        soft_btn="#161a20",
-        soft_btn_hover="#1f252d",
+        muted="#a1aab8",
+        green="#81c995",
+        red="#f28b82",
+        blue="#1a73e8",
+        blue_hover="#3c8df6",
+        soft_btn="#202938",
+        soft_btn_hover="#2b3648",
         shadow=QColor(0, 0, 0, 120),
     ),
 }
@@ -6332,7 +6573,7 @@ class ComfySetupPage(QWidget):
         title_layout.setSpacing(2)
         self.title_label = QLabel("Установка Comfy")
         self.title_label.setObjectName("logsTitle")
-        self.subtitle_label = QLabel("Здесь можно поставить ComfyUI с нужными файлами или отдельно доставить ноды. Раскрой блок, чтобы увидеть детали.")
+        self.subtitle_label = QLabel("Установка ComfyUI, Manager, моделей и нужных нод.")
         self.subtitle_label.setObjectName("logsSubtitle")
         self.subtitle_label.setWordWrap(True)
         title_layout.addWidget(self.title_label)
@@ -6725,11 +6966,11 @@ class MainWindow(QWidget):
 
         self.drawer_anim = QPropertyAnimation(self.drawer, b"pos", self)
         self.drawer_anim.setDuration(OVERLAY_ANIMATION_MS)
-        self.drawer_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self.drawer_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self.friends_anim = QPropertyAnimation(self.friends_panel, b"pos", self)
         self.friends_anim.setDuration(OVERLAY_ANIMATION_MS)
-        self.friends_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self.friends_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self.drawer_fade_anim = QPropertyAnimation(self.drawer_opacity, b"opacity", self)
         self.drawer_fade_anim.setDuration(OVERLAY_ANIMATION_MS)
@@ -6755,16 +6996,16 @@ class MainWindow(QWidget):
         self.page_fade_anim.finished.connect(self.on_page_fade_finished)
 
         self.launch_choice_anim = QPropertyAnimation(self.launch_choice_card, b"pos", self)
-        self.launch_choice_anim.setDuration(220)
+        self.launch_choice_anim.setDuration(310)
         self.launch_choice_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self.launch_choice_fade_anim = QPropertyAnimation(self.launch_choice_opacity, b"opacity", self)
-        self.launch_choice_fade_anim.setDuration(180)
+        self.launch_choice_fade_anim.setDuration(260)
         self.launch_choice_fade_anim.setEasingCurve(QEasingCurve.OutCubic)
         self.launch_choice_fade_anim.finished.connect(self.on_launch_choice_fade_finished)
 
         self.launch_choice_backdrop_anim = QPropertyAnimation(self.launch_choice_backdrop, b"alpha", self)
-        self.launch_choice_backdrop_anim.setDuration(220)
+        self.launch_choice_backdrop_anim.setDuration(300)
         self.launch_choice_backdrop_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         if self.autorun_mode:
@@ -6787,7 +7028,7 @@ class MainWindow(QWidget):
         self.main_scroll.setFrameShape(QFrame.NoFrame)
         self.main_scroll.setWidgetResizable(True)
         self.main_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.main_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.main_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.page_stack.addWidget(self.main_scroll)
 
         self.main_content = QWidget()
@@ -6831,7 +7072,7 @@ class MainWindow(QWidget):
         brand_layout.setSpacing(2)
         self.title_label = QLabel("Comfy Portal")
         self.title_label.setObjectName("titleLabel")
-        self.subtitle_label = QLabel("Запуск, туннель и копирование ссылки в одном месте.")
+        self.subtitle_label = QLabel("Быстрый запуск ComfyUI и публичная ссылка в одном окне.")
         self.subtitle_label.setObjectName("subtitleLabel")
         brand_layout.addWidget(self.title_label)
         brand_layout.addWidget(self.subtitle_label)
@@ -6900,10 +7141,10 @@ class MainWindow(QWidget):
 
         self.hero = CardFrame("heroCard")
         hero_layout = QVBoxLayout(self.hero)
-        hero_layout.setContentsMargins(38, 34, 38, 34)
-        hero_layout.setSpacing(16)
+        hero_layout.setContentsMargins(34, 28, 34, 28)
+        hero_layout.setSpacing(14)
 
-        self.hero_title = QLabel("LocalTunnel Link")
+        self.hero_title = QLabel("Tunnel Link")
         self.hero_title.setObjectName("heroTitle")
         self.hero_title.setAlignment(Qt.AlignCenter)
         self.hero_subtitle = QLabel("Ссылка появится здесь, как только ComfyUI и туннель будут готовы.")
@@ -6945,8 +7186,8 @@ class MainWindow(QWidget):
 
         self.status_panel = CardFrame("statusPanel")
         status_layout = QVBoxLayout(self.status_panel)
-        status_layout.setContentsMargins(28, 26, 28, 26)
-        status_layout.setSpacing(16)
+        status_layout.setContentsMargins(26, 22, 26, 22)
+        status_layout.setSpacing(14)
 
         self.status_title = QLabel("System status")
         self.status_title.setObjectName("sectionTitle")
@@ -6976,7 +7217,7 @@ class MainWindow(QWidget):
 
         self.bottom_space = QWidget()
         self.bottom_space.setObjectName("bottomSpacer")
-        self.bottom_space.setFixedHeight(220)
+        self.bottom_space.setFixedHeight(0)
 
         content_layout.addWidget(self.topbar)
         content_layout.addWidget(self.progress)
@@ -7008,7 +7249,7 @@ class MainWindow(QWidget):
         logs_title_layout.setSpacing(2)
         self.logs_title = QLabel("Comfy Logs")
         self.logs_title.setObjectName("logsTitle")
-        self.logs_subtitle = QLabel("Живой вывод stdout и stderr ComfyUI прямо внутри портала.")
+        self.logs_subtitle = QLabel("Последние сообщения ComfyUI и туннеля.")
         self.logs_subtitle.setObjectName("logsSubtitle")
         self.logs_subtitle.setWordWrap(True)
         logs_title_layout.addWidget(self.logs_title)
@@ -7255,6 +7496,50 @@ class MainWindow(QWidget):
         onboarding_mode_layout.addWidget(self.onboarding_mode_continue)
         self.launch_choice_stack.addWidget(self.onboarding_mode_page)
 
+        self.onboarding_tunnel_page = QWidget()
+        onboarding_tunnel_layout = QVBoxLayout(self.onboarding_tunnel_page)
+        onboarding_tunnel_layout.setContentsMargins(6, 6, 6, 6)
+        onboarding_tunnel_layout.setSpacing(14)
+        self.onboarding_tunnel_title = QLabel("Выбери туннель")
+        self.onboarding_tunnel_title.setObjectName("launchChoiceTitle")
+        self.onboarding_tunnel_hint = QLabel("Cloudflare дает случайную ссылку trycloudflare.com. LocalTunnel позволяет задать свой subdomain на loca.lt.")
+        self.onboarding_tunnel_hint.setObjectName("launchChoiceSubtitle")
+        self.onboarding_tunnel_hint.setWordWrap(True)
+        self.onboarding_cloudflare_button = QPushButton("Cloudflare")
+        self.onboarding_localtunnel_button = QPushButton("LocalTunnel")
+        self.onboarding_tunnel_buttons = {
+            TUNNEL_PROVIDER_CLOUDFLARE: self.onboarding_cloudflare_button,
+            TUNNEL_PROVIDER_LOCALTUNNEL: self.onboarding_localtunnel_button,
+        }
+        self.onboarding_tunnel_group = QButtonGroup(self)
+        self.onboarding_tunnel_group.setExclusive(True)
+        for provider, button in self.onboarding_tunnel_buttons.items():
+            button.setCheckable(True)
+            button.setObjectName("launchChoiceModeRedButton")
+            button.setMinimumHeight(58)
+            button.setCursor(Qt.PointingHandCursor)
+            button.clicked.connect(partial(self.set_onboarding_tunnel_provider, provider))
+            self.onboarding_tunnel_group.addButton(button)
+        tunnel_buttons_layout = QHBoxLayout()
+        tunnel_buttons_layout.setSpacing(12)
+        tunnel_buttons_layout.addWidget(self.onboarding_cloudflare_button, 1)
+        tunnel_buttons_layout.addWidget(self.onboarding_localtunnel_button, 1)
+        self.onboarding_tunnel_description = QLabel("")
+        self.onboarding_tunnel_description.setObjectName("launchChoiceStepHint")
+        self.onboarding_tunnel_description.setWordWrap(True)
+        self.onboarding_tunnel_continue = QPushButton("Продолжить")
+        self.onboarding_tunnel_continue.setObjectName("launchChoiceContinueButton")
+        self.onboarding_tunnel_continue.setMinimumHeight(52)
+        self.onboarding_tunnel_continue.setCursor(Qt.PointingHandCursor)
+        self.onboarding_tunnel_continue.clicked.connect(self.advance_onboarding_from_tunnel_provider)
+        onboarding_tunnel_layout.addWidget(self.onboarding_tunnel_title)
+        onboarding_tunnel_layout.addWidget(self.onboarding_tunnel_hint)
+        onboarding_tunnel_layout.addLayout(tunnel_buttons_layout)
+        onboarding_tunnel_layout.addWidget(self.onboarding_tunnel_description)
+        onboarding_tunnel_layout.addStretch(1)
+        onboarding_tunnel_layout.addWidget(self.onboarding_tunnel_continue)
+        self.launch_choice_stack.addWidget(self.onboarding_tunnel_page)
+
         self.onboarding_subdomain_page = QWidget()
         onboarding_subdomain_layout = QVBoxLayout(self.onboarding_subdomain_page)
         onboarding_subdomain_layout.setContentsMargins(6, 6, 6, 6)
@@ -7349,6 +7634,35 @@ class MainWindow(QWidget):
         self.comfy_root_pick_button.setCursor(Qt.PointingHandCursor)
         self.comfy_root_pick_button.clicked.connect(self.pick_comfy_root)
 
+        self.tunnel_provider_label = QLabel("Tunnel provider")
+        self.tunnel_provider_label.setObjectName("drawerLabel")
+        self.tunnel_provider_segment = QFrame()
+        self.tunnel_provider_segment.setObjectName("themeSegment")
+        self.tunnel_provider_segment.setFixedHeight(64)
+        tunnel_provider_layout = QHBoxLayout(self.tunnel_provider_segment)
+        tunnel_provider_layout.setContentsMargins(4, 4, 4, 4)
+        tunnel_provider_layout.setSpacing(6)
+        self.cloudflare_button = QPushButton("Cloudflare")
+        self.localtunnel_button = QPushButton("LocalTunnel")
+        self.tunnel_provider_buttons = {
+            TUNNEL_PROVIDER_CLOUDFLARE: self.cloudflare_button,
+            TUNNEL_PROVIDER_LOCALTUNNEL: self.localtunnel_button,
+        }
+        self.tunnel_provider_group = QButtonGroup(self)
+        self.tunnel_provider_group.setExclusive(True)
+        for provider, button in self.tunnel_provider_buttons.items():
+            button.setCheckable(True)
+            button.setObjectName("segmentButton")
+            button.setCursor(Qt.PointingHandCursor)
+            button.setFixedHeight(40)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.clicked.connect(partial(self.set_tunnel_provider, provider))
+            self.tunnel_provider_group.addButton(button)
+            tunnel_provider_layout.addWidget(button)
+        self.tunnel_provider_hint = QLabel("")
+        self.tunnel_provider_hint.setObjectName("drawerHint")
+        self.tunnel_provider_hint.setWordWrap(True)
+
         self.subdomain_label = QLabel("LocalTunnel subdomain")
         self.subdomain_label.setObjectName("drawerLabel")
         self.subdomain_input = QLineEdit()
@@ -7357,6 +7671,9 @@ class MainWindow(QWidget):
         self.subdomain_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.subdomain_input.setMinimumHeight(44)
         self.subdomain_input.textEdited.connect(self.mark_settings_dirty)
+        self.subdomain_hint = QLabel("Используется только в LocalTunnel. В Cloudflare ссылка всегда случайная.")
+        self.subdomain_hint.setObjectName("drawerHint")
+        self.subdomain_hint.setWordWrap(True)
 
         self.port_label = QLabel("Port")
         self.port_label.setObjectName("drawerLabel")
@@ -7444,11 +7761,20 @@ class MainWindow(QWidget):
         self.save_settings_button.setCursor(Qt.PointingHandCursor)
         self.save_settings_button.clicked.connect(self.save_settings)
 
+        self.repair_launch_button = QPushButton("Repair launch")
+        self.repair_launch_button.setObjectName("repairLaunchButton")
+        self.repair_launch_button.setCursor(Qt.PointingHandCursor)
+        self.repair_launch_button.clicked.connect(self.on_repair_launch_clicked)
+
         drawer_layout.addWidget(self.comfy_root_label)
         drawer_layout.addWidget(self.comfy_root_input)
         drawer_layout.addWidget(self.comfy_root_pick_button)
+        drawer_layout.addWidget(self.tunnel_provider_label)
+        drawer_layout.addWidget(self.tunnel_provider_segment)
+        drawer_layout.addWidget(self.tunnel_provider_hint)
         drawer_layout.addWidget(self.subdomain_label)
         drawer_layout.addWidget(self.subdomain_input)
+        drawer_layout.addWidget(self.subdomain_hint)
         drawer_layout.addWidget(self.port_label)
         drawer_layout.addWidget(self.port_input)
         drawer_layout.addWidget(self.launch_mode_label)
@@ -7460,6 +7786,7 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.auto_copy_row)
         drawer_layout.addWidget(self.auto_restart_row)
         drawer_layout.addWidget(self.start_on_boot_row)
+        drawer_layout.addWidget(self.repair_launch_button)
         drawer_layout.addWidget(self.save_settings_button)
         drawer_layout.addItem(QSpacerItem(0, 8, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
@@ -7496,7 +7823,7 @@ class MainWindow(QWidget):
 
         self.friends_title = QLabel("Friends")
         self.friends_title.setObjectName("drawerTitle")
-        self.friends_subtitle = QLabel("Создай отдельную ссылку для друга, скопируй ее и в любой момент удаляй без мусора.")
+        self.friends_subtitle = QLabel("Ссылка для друзей.")
         self.friends_subtitle.setObjectName("drawerHint")
         self.friends_subtitle.setWordWrap(True)
 
@@ -7591,7 +7918,7 @@ class MainWindow(QWidget):
                 border-radius: 34px;
             }}
             QFrame#heroCard {{
-                background: {self.theme.surface};
+                background: {self.theme.panel_bg};
                 border: 1px solid {self.theme.border};
                 border-radius: 28px;
             }}
@@ -7599,7 +7926,7 @@ class MainWindow(QWidget):
                 background: transparent;
             }}
             QFrame#statusCard {{
-                background: {self.theme.panel_alt};
+                background: {self.theme.surface};
                 border: 1px solid {self.theme.border};
                 border-radius: 24px;
             }}
@@ -7609,7 +7936,7 @@ class MainWindow(QWidget):
                 border-radius: 0px;
             }}
             QFrame#friendLinkCard {{
-                background: {self.theme.panel_alt};
+                background: {self.theme.surface};
                 border: 1px solid {self.theme.border};
                 border-radius: 22px;
             }}
@@ -7692,6 +8019,11 @@ class MainWindow(QWidget):
                 color: {self.theme.text};
                 background: transparent;
             }}
+            QLabel#drawerHint {{
+                font-size: 12px;
+                color: {self.theme.muted};
+                background: transparent;
+            }}
             QLabel#logsStatusPill {{
                 background: {self.theme.surface_alt};
                 color: {self.theme.text};
@@ -7738,7 +8070,7 @@ class MainWindow(QWidget):
                 selection-background-color: {self.theme.blue};
             }}
             QFrame#linkShell {{
-                background: {self.theme.panel_alt};
+                background: {self.theme.surface_alt};
                 border: 1px solid {self.theme.border};
                 border-radius: 30px;
             }}
@@ -7749,7 +8081,7 @@ class MainWindow(QWidget):
                 font-weight: 700;
                 background: transparent;
             }}
-            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#saveSettingsButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#installButton, QPushButton#logsBackButton, QPushButton#logsButton, QPushButton#githubBrandButton {{
+            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#saveSettingsButton, QPushButton#repairLaunchButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#installButton, QPushButton#logsBackButton, QPushButton#logsButton, QPushButton#githubBrandButton {{
                 border: none;
                 border-radius: 20px;
                 padding: 12px 18px;
@@ -7779,6 +8111,10 @@ class MainWindow(QWidget):
             }}
             QPushButton#gearButton:hover, QPushButton#copyButton:hover, QPushButton#refreshButton:hover, QPushButton#friendsButton:hover, QPushButton#friendCustomButton:hover, QPushButton#logsBackButton:hover, QPushButton#logsButton:hover {{
                 background: {self.theme.soft_btn_hover};
+            }}
+            QPushButton#friendsButton:pressed, QPushButton#friendCustomButton:pressed, QPushButton#logsButton:pressed, QPushButton#saveSettingsButton:pressed, QPushButton#repairLaunchButton:pressed, QPushButton#friendCreateButton:pressed {{
+                padding-top: 13px;
+                padding-bottom: 11px;
             }}
             QPushButton#installButton {{
                 background: {self.theme.soft_btn};
@@ -7877,6 +8213,14 @@ class MainWindow(QWidget):
                 background: {self.theme.blue};
                 color: white;
                 border: none;
+            }}
+            QPushButton#repairLaunchButton {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.text};
+                border: 1px solid {self.theme.border};
+            }}
+            QPushButton#repairLaunchButton:hover {{
+                background: {self.theme.soft_btn_hover};
             }}
             QLabel#launchChoiceStats {{
                 background: {self.theme.panel_alt};
@@ -8099,6 +8443,7 @@ class MainWindow(QWidget):
         for row in self.onboarding_install_rows.values():
             row.apply_theme(self.theme)
         self.update_onboarding_mode_buttons()
+        self.update_onboarding_tunnel_buttons()
         self.refresh_onboarding_subdomain_state()
         self.update_segment_buttons()
         self.update_action_button()
@@ -8122,6 +8467,10 @@ class MainWindow(QWidget):
                     button.setChecked(False)
 
         apply_segment_group(self.config["theme"], [(self.light_button, "light"), (self.dark_button, "dark")])
+        apply_segment_group(
+            normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER)),
+            [(button, provider) for provider, button in self.tunnel_provider_buttons.items()],
+        )
         apply_segment_group(
             normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE)),
             [(button, mode) for mode, button in self.launch_mode_buttons.items()],
@@ -8308,6 +8657,21 @@ class MainWindow(QWidget):
                     should_check = mode_key == active_launch_mode
                     if button.isChecked() != should_check:
                         button.setChecked(should_check)
+
+                active_provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+                for provider, button in self.tunnel_provider_buttons.items():
+                    should_check = provider == active_provider
+                    if button.isChecked() != should_check:
+                        button.setChecked(should_check)
+                self.tunnel_provider_hint.setText(tunnel_provider_description(active_provider))
+                localtunnel_selected = active_provider == TUNNEL_PROVIDER_LOCALTUNNEL
+                self.subdomain_input.setEnabled(localtunnel_selected)
+                self.subdomain_label.setText("LocalTunnel subdomain" if localtunnel_selected else "LocalTunnel subdomain")
+                self.subdomain_hint.setText(
+                    "Можно задать свою ссылку вида https://name.loca.lt."
+                    if localtunnel_selected
+                    else "Cloudflare Quick Tunnel выдаёт случайную trycloudflare.com ссылку, это поле не используется."
+                )
 
                 extra_args_text = normalize_extra_launch_args(self.config.get("extra_launch_args", ""))
                 if not self.extra_launch_args_input.hasFocus() and self.extra_launch_args_input.text() != extra_args_text:
@@ -8822,13 +9186,37 @@ class MainWindow(QWidget):
     def update_onboarding_mode_buttons(self) -> None:
         selected_mode = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
         gpu_selected = selected_mode != "cpu"
-        selected_style = "background: #16a34a; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
-        unselected_style = f"background: {self.theme.red}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
+        selected_style = f"background: {self.theme.blue}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
+        unselected_style = f"background: {self.theme.soft_btn}; color: {self.theme.text}; border: 1px solid {self.theme.border}; border-radius: 22px; font-size: 16px; font-weight: 800;"
         self.onboarding_gpu_button.setStyleSheet(selected_style if gpu_selected else unselected_style)
         self.onboarding_cpu_button.setStyleSheet(selected_style if not gpu_selected else unselected_style)
         self.onboarding_mode_recommend.setText("Рекомендуется: GPU" if gpu_selected else "Выбран CPU режим")
 
+    def update_onboarding_tunnel_buttons(self) -> None:
+        selected_provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        selected_style = f"background: {self.theme.blue}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
+        unselected_style = f"background: {self.theme.soft_btn}; color: {self.theme.text}; border: 1px solid {self.theme.border}; border-radius: 22px; font-size: 16px; font-weight: 800;"
+        for provider, button in self.onboarding_tunnel_buttons.items():
+            active = provider == selected_provider
+            button.setChecked(active)
+            button.setStyleSheet(selected_style if active else unselected_style)
+        self.onboarding_tunnel_description.setText(tunnel_provider_description(selected_provider))
+
     def refresh_onboarding_subdomain_state(self) -> None:
+        provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        if provider == TUNNEL_PROVIDER_CLOUDFLARE:
+            self.onboarding_subdomain_input.setEnabled(False)
+            self.onboarding_subdomain_input.setStyleSheet(
+                f"background: {self.theme.panel_alt}; border: 2px solid {self.theme.border}; border-radius: 18px; padding: 12px 14px; font-size: 15px; font-weight: 700; color: {self.theme.muted}; selection-background-color: {self.theme.blue};"
+            )
+            self.onboarding_subdomain_error.setText("Cloudflare выдаст случайную ссылку trycloudflare.com после запуска.")
+            self.onboarding_subdomain_error.setStyleSheet(f"color: {self.theme.green}; font-size: 12px; font-weight: 700;")
+            self.onboarding_subdomain_continue.setEnabled(True)
+            self.onboarding_subdomain_continue.setStyleSheet(
+                f"background: {self.theme.blue}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
+            )
+            return
+        self.onboarding_subdomain_input.setEnabled(True)
         current = sanitize_subdomain(self.onboarding_subdomain_input.text())
         valid = is_valid_main_subdomain(current)
         border = "#16a34a" if valid else self.theme.red
@@ -8851,14 +9239,17 @@ class MainWindow(QWidget):
             )
 
     def set_onboarding_step(self, step: str) -> None:
-        mapping = {"space": 0, "install": 1, "mode": 2, "subdomain": 3, "guide": 4}
+        mapping = {"space": 0, "install": 1, "mode": 2, "tunnel": 3, "subdomain": 4, "guide": 5}
         self.onboarding_step = step
         self.launch_choice_stack.setCurrentIndex(mapping.get(step, 2))
         if step == "mode":
             self.update_onboarding_mode_buttons()
+        elif step == "tunnel":
+            self.update_onboarding_tunnel_buttons()
         elif step == "subdomain":
             self.refresh_onboarding_subdomain_state()
-            self.onboarding_subdomain_input.setFocus()
+            if normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER)) == TUNNEL_PROVIDER_LOCALTUNNEL:
+                self.onboarding_subdomain_input.setFocus()
 
     def refresh_onboarding_flow(self) -> None:
         status = cached_comfy_setup_status(self.config, force=True)
@@ -8947,6 +9338,19 @@ class MainWindow(QWidget):
         self.config["launch_mode_confirmed"] = True
         save_config(self.config)
         self.load_controls_from_config(force=True)
+        self.set_onboarding_step("tunnel")
+
+    def set_onboarding_tunnel_provider(self, provider: str) -> None:
+        self.config["tunnel_provider"] = normalize_tunnel_provider(provider)
+        self.update_onboarding_tunnel_buttons()
+
+    def advance_onboarding_from_tunnel_provider(self) -> None:
+        self.config["tunnel_provider"] = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        save_config(self.config)
+        self.load_controls_from_config(force=True)
+        if self.config["tunnel_provider"] == TUNNEL_PROVIDER_CLOUDFLARE:
+            self.set_onboarding_step("guide")
+            return
         current_value = sanitize_subdomain(self.config.get("subdomain", ""))
         self.onboarding_subdomain_input.setText(current_value if len(current_value) >= ONBOARDING_MIN_SUBDOMAIN_LEN else "")
         self.set_onboarding_step("subdomain")
@@ -8955,6 +9359,9 @@ class MainWindow(QWidget):
         self.refresh_onboarding_subdomain_state()
 
     def advance_onboarding_from_subdomain(self) -> None:
+        if normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER)) == TUNNEL_PROVIDER_CLOUDFLARE:
+            self.set_onboarding_step("guide")
+            return
         value = sanitize_subdomain(self.onboarding_subdomain_input.text())
         if not is_valid_main_subdomain(value):
             self.refresh_onboarding_subdomain_state()
@@ -9091,6 +9498,9 @@ class MainWindow(QWidget):
         comfy_root = str(coerce_comfy_root(comfy_root_input) or "")
         updated_config["comfy_root"] = comfy_root
         updated_config["subdomain"] = normalize_subdomain(self.subdomain_input.text())
+        updated_config["tunnel_provider"] = normalize_tunnel_provider(
+            next((provider for provider, button in self.tunnel_provider_buttons.items() if button.isChecked()), self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        )
         updated_config["launch_mode"] = normalize_launch_mode(
             next((mode for mode, button in self.launch_mode_buttons.items() if button.isChecked()), self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
         )
@@ -9239,6 +9649,26 @@ class MainWindow(QWidget):
         self.update_segment_buttons()
         self.mark_settings_dirty()
 
+    def set_tunnel_provider(self, provider: str) -> None:
+        provider = normalize_tunnel_provider(provider)
+        button = self.tunnel_provider_buttons.get(provider)
+        if button and not button.isChecked():
+            button.setChecked(True)
+        if self.syncing_controls:
+            return
+        if normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER)) == provider:
+            return
+        self.config["tunnel_provider"] = provider
+        self.tunnel_provider_hint.setText(tunnel_provider_description(provider))
+        self.subdomain_input.setEnabled(provider == TUNNEL_PROVIDER_LOCALTUNNEL)
+        self.subdomain_hint.setText(
+            "Можно задать свою ссылку вида https://name.loca.lt."
+            if provider == TUNNEL_PROVIDER_LOCALTUNNEL
+            else "Cloudflare Quick Tunnel выдаёт случайную trycloudflare.com ссылку, это поле не используется."
+        )
+        self.update_segment_buttons()
+        self.mark_settings_dirty()
+
     def set_busy(self, busy: bool) -> None:
         self.busy = busy
         if busy:
@@ -9253,6 +9683,8 @@ class MainWindow(QWidget):
             self.busy_timer.stop()
             self.busy_dots = 0
         self.update_action_button()
+        if hasattr(self, "repair_launch_button"):
+            self.repair_launch_button.setEnabled(not busy)
         if self.latest_snap:
             self.update_friend_panel_state(self.latest_snap)
             self.update_friends_button(self.latest_snap)
@@ -9461,6 +9893,13 @@ class MainWindow(QWidget):
             return
         self.run_background(regenerate_main_tunnel, job_kind="retunnel", set_busy=True, show_toast=True)
 
+    def on_repair_launch_clicked(self) -> None:
+        if self.busy:
+            return
+        if not self.save_settings(silent=True):
+            return
+        self.run_background(repair_launch, job_kind="repair", set_busy=True, show_toast=True)
+
     def copy_friend_link_by_id(self, link_id: str) -> None:
         snap = self.current_snapshot()
         for entry in snap.get("friend_links", []):
@@ -9527,7 +9966,9 @@ class MainWindow(QWidget):
             self.show_toast("Выбрана папка, но внутри не найден portable ComfyUI.", True)
 
     def save_settings(self, silent: bool = False) -> bool:
-        updated_config = dict(load_config())
+        previous_config = load_config()
+        previous_provider = normalize_tunnel_provider(previous_config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        updated_config = dict(previous_config)
         comfy_root_input = normalize_root_path(self.comfy_root_input.text())
         comfy_root = str(coerce_comfy_root(comfy_root_input) or "")
         if comfy_root_input and not comfy_root:
@@ -9536,6 +9977,9 @@ class MainWindow(QWidget):
             return False
         updated_config["comfy_root"] = comfy_root
         updated_config["subdomain"] = normalize_subdomain(self.subdomain_input.text())
+        updated_config["tunnel_provider"] = normalize_tunnel_provider(
+            next((provider for provider, button in self.tunnel_provider_buttons.items() if button.isChecked()), self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        )
         updated_config["launch_mode"] = normalize_launch_mode(
             next((mode for mode, button in self.launch_mode_buttons.items() if button.isChecked()), self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
         )
@@ -9546,6 +9990,9 @@ class MainWindow(QWidget):
         updated_config["start_on_boot"] = self.start_on_boot_toggle.isChecked()
         self.config = updated_config
         save_config(self.config)
+        provider_changed = previous_provider != normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        if provider_changed:
+            stop_main_tunnel_only()
         if comfy_root and self.comfy_root_input.text() != comfy_root:
             self.comfy_root_input.setText(comfy_root)
         try:
@@ -9697,14 +10144,17 @@ class MainWindow(QWidget):
         self.ensure_launch_choice_stack()
 
         comfy_detail = "Порт 8188 готов" if snap["comfy_active"] else "Ждем запуск"
+        current_provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
         if snap["tunnel_active"]:
-            tunnel_detail = self.config["subdomain"] if snap.get("url_ready", False) else "Проверяем ссылку"
+            tunnel_detail = tunnel_provider_title(current_provider) if snap.get("url_ready", False) else "Проверяем ссылку"
         elif snap["desired_running"] and snap["retry_in"] > 0:
             tunnel_detail = f"Повтор через {snap['retry_in']}с"
         elif snap["desired_running"]:
             tunnel_detail = "Переподключаем"
         else:
             tunnel_detail = "Ждем ссылку"
+        if snap["tunnel_active"] and not snap.get("url_ready", False) and snap.get("tunnel_error"):
+            tunnel_detail = snap["tunnel_error"]
         any_live = snap["comfy_active"] or snap["tunnel_active"] or snap["friend_active"]
         launcher_value = "Работает" if self.busy else ("Онлайн" if any_live else "Готов")
         launcher_color = self.theme.blue if self.busy else (self.theme.green if any_live else self.theme.text)
@@ -9718,7 +10168,13 @@ class MainWindow(QWidget):
             launcher_detail = "Авто-туннель включен" if self.config.get("auto_restart_tunnel", True) else "Авто-туннель выключен"
 
         self.comfy_card.set_status("Активен" if snap["comfy_active"] else "Оффлайн", self.theme.green if snap["comfy_active"] else self.theme.red, comfy_detail)
-        self.tunnel_card.set_status("Активен" if snap["tunnel_active"] else "Оффлайн", self.theme.green if snap["tunnel_active"] else self.theme.red, tunnel_detail)
+        tunnel_ready = bool(snap["tunnel_active"] and snap.get("url_ready", False))
+        if tunnel_ready:
+            self.tunnel_card.set_status("Активен", self.theme.green, tunnel_detail)
+        elif snap["tunnel_active"]:
+            self.tunnel_card.set_status("Проверка", self.theme.red if snap.get("tunnel_needs_restart", False) else self.theme.blue, tunnel_detail)
+        else:
+            self.tunnel_card.set_status("Оффлайн", self.theme.red, tunnel_detail)
         self.launcher_card.set_status(launcher_value, launcher_color, launcher_detail)
         self.logs_status_pill.setText("Активен" if snap["comfy_active"] else "Оффлайн")
         self.logs_status_pill.setStyleSheet(
@@ -9730,11 +10186,12 @@ class MainWindow(QWidget):
         tunnel_log = snap["logs"]["tunnel"].splitlines()[-1] if snap["logs"]["tunnel"] else ""
         friend_log = snap["logs"]["friend"].splitlines()[-1] if snap["logs"]["friend"] else ""
         main_subdomain = normalize_subdomain(self.config.get("subdomain", ""))
-        if tunnel_log and snap["tunnel_active"] and main_subdomain:
+        current_provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        if tunnel_log and snap["tunnel_active"] and current_provider == TUNNEL_PROVIDER_LOCALTUNNEL and main_subdomain:
             detected_subdomain = extract_public_subdomain(tunnel_log)
             if detected_subdomain and detected_subdomain != main_subdomain:
                 tunnel_log = f"your url is: {friend_url_for_subdomain(main_subdomain)}"
-        footer = "Start сначала поднимает ComfyUI, а потом LocalTunnel."
+        footer = f"Готово к запуску через {tunnel_provider_title(current_provider)}."
         if not snap["comfy_root"]:
             footer = "Укажи portable-папку ComfyUI в настройках или держи exe рядом с ней."
         elif (snap["desired_running"] or snap["friend_count"]) and not snap.get("internet_ok", True):
@@ -9742,7 +10199,7 @@ class MainWindow(QWidget):
         if snap["comfy_active"] and snap["tunnel_active"] and snap.get("url_ready", False):
             footer = "Все выглядит готовым."
         elif snap["comfy_active"] and snap["tunnel_active"] and not snap.get("url_ready", False):
-            footer = snap["tunnel_error"] or "LocalTunnel запущен, проверяем публичную ссылку."
+            footer = snap["tunnel_error"] or "Туннель запущен, проверяем публичную ссылку."
         elif snap["friend_count"]:
             footer = "Friend links прогреваются." if snap["friend_active_count"] < snap["friend_count"] else "Friend links готовы к отправке."
         elif snap["desired_running"] and not snap["tunnel_active"] and snap["retry_in"] > 0:
@@ -9766,7 +10223,7 @@ class MainWindow(QWidget):
             log_lines.append("Туннель: " + snap["logs"]["tunnel"].splitlines()[-1])
         if snap["logs"]["friend"]:
             log_lines.append("Друзья: " + snap["logs"]["friend"].splitlines()[-1])
-        log_text = "\n".join(log_lines) if log_lines else "Логи появятся здесь после запуска."
+        log_text = "\n".join(log_lines) if log_lines else "После запуска здесь появятся последние сообщения."
         if self.last_log_hint != log_text:
             self.log_hint.setText(log_text)
             self.last_log_hint = log_text
