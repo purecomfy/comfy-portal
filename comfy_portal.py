@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.1.10"
+APP_VERSION = "2.0.0"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -105,6 +105,11 @@ TELEGRAM_BRAND_SIZE = 38
 GITHUB_BRAND_SIZE = 38
 ONBOARDING_MIN_SUBDOMAIN_LEN = 6
 ONBOARDING_STORAGE_HEADROOM_BYTES = 1024 * 1024 * 1024
+DEFAULT_SUBDOMAIN_PREFIX = "comfylocal"
+DEFAULT_SUBDOMAIN_RANDOM_DIGITS = 4
+DEFAULT_SUBDOMAIN_AVAILABILITY_ATTEMPTS = 5
+SUBDOMAIN_AVAILABILITY_TIMEOUT = 0.7
+LEGACY_DEFAULT_SUBDOMAINS = {"comfylocal5618"}
 FRIEND_LINK_PATTERN = re.compile(r"friendscomfy(?:\d{6}|\d{8})")
 SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9-]{3,63}$")
 SUBDOMAIN_ARG_PATTERN = re.compile(r"--subdomain\s+([a-z0-9-]+)")
@@ -615,10 +620,43 @@ def resolve_tool_path(filename: str) -> Path:
     return candidates[0]
 
 
-def default_config() -> dict:
+def generate_default_main_subdomain() -> str:
+    upper_bound = 10 ** DEFAULT_SUBDOMAIN_RANDOM_DIGITS
+    suffix = secrets.randbelow(upper_bound)
+    return f"{DEFAULT_SUBDOMAIN_PREFIX}{suffix:0{DEFAULT_SUBDOMAIN_RANDOM_DIGITS}d}"
+
+
+def localtunnel_subdomain_appears_available(subdomain: str, timeout_seconds: float = SUBDOMAIN_AVAILABILITY_TIMEOUT) -> bool:
+    clean = re.sub(r"[^a-z0-9-]", "", str(subdomain or "").strip().lower())
+    if not SUBDOMAIN_PATTERN.fullmatch(clean):
+        return False
+    request = urllib.request.Request(
+        f"https://{clean}.loca.lt",
+        headers={"User-Agent": DOWNLOAD_USER_AGENT},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds):
+            return False
+    except urllib.error.HTTPError as exc:
+        return exc.code in {404, 410}
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError):
+        return True
+
+
+def generate_available_default_main_subdomain() -> str:
+    fallback = generate_default_main_subdomain()
+    for attempt in range(DEFAULT_SUBDOMAIN_AVAILABILITY_ATTEMPTS):
+        candidate = fallback if attempt == 0 else generate_default_main_subdomain()
+        if localtunnel_subdomain_appears_available(candidate):
+            return candidate
+    return fallback
+
+
+def default_config(check_subdomain_availability: bool = False) -> dict:
     return {
         "port": 8188,
-        "subdomain": "comfylocal5618",
+        "subdomain": generate_available_default_main_subdomain() if check_subdomain_availability else generate_default_main_subdomain(),
         "tunnel_provider": DEFAULT_TUNNEL_PROVIDER,
         "theme": "light",
         "launch_mode": DEFAULT_LAUNCH_MODE,
@@ -751,9 +789,11 @@ def acquire_single_instance() -> bool:
 
 
 def load_config() -> dict:
-    config = default_config()
+    config = default_config(check_subdomain_availability=not CONFIG_PATH.exists())
     existing_raw = read_json(CONFIG_PATH, {})
     config.update(existing_raw)
+    if str(existing_raw.get("subdomain", "")).strip().lower() in LEGACY_DEFAULT_SUBDOMAINS:
+        config["subdomain"] = generate_available_default_main_subdomain()
     legacy_keys = normalize_api_key_items(existing_raw.get("civitai_api_key", "")) + normalize_api_key_items(existing_raw.get("civitai_api_keys", ""))
     stored_keys = decode_api_keys_b64(existing_raw.get("civitai_api_keys_b64", []))
     config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys)
@@ -889,6 +929,7 @@ def comfy_launch_command(root: Path, config: dict | None = None) -> list[str]:
             args.append(required_arg)
     return [
         str(root / "python_embeded" / "python.exe"),
+        "-u",
         "-s",
         "ComfyUI\\main.py",
         *args,
@@ -2158,6 +2199,10 @@ def comfy_core_has_missing(status: dict) -> bool:
         or (not status.get("manager_ready"))
         or any(not item.get("ready") for item in status.get("models", []))
     )
+
+
+def comfy_portable_has_missing(status: dict) -> bool:
+    return not status.get("comfy_ready")
 
 
 def comfy_nodes_have_missing(status: dict) -> bool:
@@ -3496,6 +3541,32 @@ def install_comfy_core_setup(install_parent: Path | None = None, progress=None, 
     return " ".join(messages)
 
 
+def install_comfy_portable_setup(install_parent: Path | None = None, progress=None, force_update: bool = False) -> str:
+    root = current_comfy_root()
+    status = cached_comfy_setup_status(force=True)
+    update_available = bool(root and (force_update or status.get("comfy_update_available")))
+
+    if not root:
+        if install_parent is None:
+            raise RuntimeError("Выбери папку, куда скачать portable ComfyUI.")
+        root = install_comfyui_portable(install_parent, progress=progress)
+        message = f"Portable ComfyUI готов: {root}"
+    elif update_available:
+        root = install_comfyui_portable(root.parent, progress=progress, force_update=True)
+        message = "Portable ComfyUI обновлен."
+    else:
+        config = load_config()
+        config["comfy_root"] = str(root)
+        save_config(config)
+        message = "Portable ComfyUI уже найден."
+
+    invalidate_setup_status_cache()
+    status = cached_comfy_setup_status(force=True)
+    if not status.get("comfy_ready"):
+        raise RuntimeError("Portable ComfyUI не найден после установки.")
+    return message
+
+
 def install_nodes_setup(progress=None) -> str:
     root = current_comfy_root()
     if not root:
@@ -4719,6 +4790,22 @@ def repair_launch() -> str:
     clear_logs(COMFY_OUT, COMFY_ERR, TUNNEL_OUT, TUNNEL_ERR)
     reset_tunnel_retry()
     return start_all()
+
+
+def reset_portal_config() -> str:
+    stop_all()
+    clear_logs(COMFY_OUT, COMFY_ERR, TUNNEL_OUT, TUNNEL_ERR)
+    config = default_config(check_subdomain_availability=True)
+    state = default_state()
+    save_config(config)
+    save_state(state)
+    try:
+        sync_windows_autostart(False)
+    except Exception:
+        pass
+    invalidate_setup_status_cache()
+    reset_tunnel_retry()
+    return "Config reset. Portal will open like first launch."
 
 
 def runtime_snapshot(include_logs: bool = False) -> dict:
@@ -7072,7 +7159,7 @@ class MainWindow(QWidget):
         brand_layout.setSpacing(2)
         self.title_label = QLabel("Comfy Portal")
         self.title_label.setObjectName("titleLabel")
-        self.subtitle_label = QLabel("Быстрый запуск ComfyUI и публичная ссылка в одном окне.")
+        self.subtitle_label = QLabel("Быстрый запуск ComfyUI.")
         self.subtitle_label.setObjectName("subtitleLabel")
         brand_layout.addWidget(self.title_label)
         brand_layout.addWidget(self.subtitle_label)
@@ -7417,17 +7504,8 @@ class MainWindow(QWidget):
         self.onboarding_install_section.cancel_requested.connect(self.cancel_setup_install)
         self.onboarding_install_section.set_collapsed(True)
         self.onboarding_install_rows["comfy"] = SetupStatusRow("Portable ComfyUI", self.theme)
-        self.onboarding_install_rows["manager"] = SetupStatusRow("ComfyUI Manager", self.theme)
         self.onboarding_install_rows["comfy"].set_link(str(onboarding_status.get("source_url", "") or COMFYUI_PORTABLE_URL))
-        self.onboarding_install_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
         self.onboarding_install_section.add_row(self.onboarding_install_rows["comfy"])
-        self.onboarding_install_section.add_row(self.onboarding_install_rows["manager"])
-        for model in onboarding_status.get("models", []):
-            key = f"model:{model['title']}"
-            row = SetupStatusRow(model["title"], self.theme)
-            row.set_link(str(model.get("url", "")))
-            self.onboarding_install_rows[key] = row
-            self.onboarding_install_section.add_row(row)
         self.refresh_onboarding_install_rows(onboarding_status)
 
         self.onboarding_install_pick_button = QPushButton("Уже есть Comfy")
@@ -7552,7 +7630,7 @@ class MainWindow(QWidget):
         self.onboarding_subdomain_input = QLineEdit()
         self.onboarding_subdomain_input.setObjectName("launchChoiceInput")
         self.onboarding_subdomain_input.setMinimumHeight(54)
-        self.onboarding_subdomain_input.setPlaceholderText("mycomfy01")
+        self.onboarding_subdomain_input.setPlaceholderText("comfylocal1234")
         self.onboarding_subdomain_input.textEdited.connect(self.on_onboarding_subdomain_changed)
         self.onboarding_subdomain_error = QLabel("Субдомен еще не подходит.")
         self.onboarding_subdomain_error.setObjectName("launchChoiceError")
@@ -7589,6 +7667,17 @@ class MainWindow(QWidget):
         onboarding_guide_layout.addStretch(1)
         onboarding_guide_layout.addWidget(self.onboarding_guide_start)
         self.launch_choice_stack.addWidget(self.onboarding_guide_page)
+
+        for label in (
+            self.onboarding_space_title,
+            self.onboarding_install_title,
+            self.onboarding_mode_title,
+            self.onboarding_tunnel_title,
+            self.onboarding_subdomain_title,
+            self.onboarding_guide_title,
+        ):
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         self.drawer = DrawerFrame("settingsDrawer")
         self.drawer.setParent(self)
@@ -7667,7 +7756,7 @@ class MainWindow(QWidget):
         self.subdomain_label.setObjectName("drawerLabel")
         self.subdomain_input = QLineEdit()
         self.subdomain_input.setObjectName("drawerInput")
-        self.subdomain_input.setPlaceholderText("comfylocal5618")
+        self.subdomain_input.setPlaceholderText("comfylocal1234")
         self.subdomain_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.subdomain_input.setMinimumHeight(44)
         self.subdomain_input.textEdited.connect(self.mark_settings_dirty)
@@ -7766,6 +7855,11 @@ class MainWindow(QWidget):
         self.repair_launch_button.setCursor(Qt.PointingHandCursor)
         self.repair_launch_button.clicked.connect(self.on_repair_launch_clicked)
 
+        self.reset_config_button = QPushButton("Reset config")
+        self.reset_config_button.setObjectName("resetConfigButton")
+        self.reset_config_button.setCursor(Qt.PointingHandCursor)
+        self.reset_config_button.clicked.connect(self.on_reset_config_clicked)
+
         drawer_layout.addWidget(self.comfy_root_label)
         drawer_layout.addWidget(self.comfy_root_input)
         drawer_layout.addWidget(self.comfy_root_pick_button)
@@ -7787,6 +7881,7 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.auto_restart_row)
         drawer_layout.addWidget(self.start_on_boot_row)
         drawer_layout.addWidget(self.repair_launch_button)
+        drawer_layout.addWidget(self.reset_config_button)
         drawer_layout.addWidget(self.save_settings_button)
         drawer_layout.addItem(QSpacerItem(0, 8, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
@@ -8003,13 +8098,13 @@ class MainWindow(QWidget):
                 background: transparent;
             }}
             QLabel#launchChoiceTitle {{
-                font-size: 34px;
+                font-size: 28px;
                 font-weight: 800;
                 color: {self.theme.text};
                 background: transparent;
             }}
             QLabel#launchChoiceSubtitle {{
-                font-size: 18px;
+                font-size: 15px;
                 color: {self.theme.muted};
                 background: transparent;
             }}
@@ -8081,7 +8176,7 @@ class MainWindow(QWidget):
                 font-weight: 700;
                 background: transparent;
             }}
-            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#saveSettingsButton, QPushButton#repairLaunchButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#installButton, QPushButton#logsBackButton, QPushButton#logsButton, QPushButton#githubBrandButton {{
+            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#saveSettingsButton, QPushButton#repairLaunchButton, QPushButton#resetConfigButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#installButton, QPushButton#logsBackButton, QPushButton#logsButton, QPushButton#githubBrandButton {{
                 border: none;
                 border-radius: 20px;
                 padding: 12px 18px;
@@ -8112,7 +8207,7 @@ class MainWindow(QWidget):
             QPushButton#gearButton:hover, QPushButton#copyButton:hover, QPushButton#refreshButton:hover, QPushButton#friendsButton:hover, QPushButton#friendCustomButton:hover, QPushButton#logsBackButton:hover, QPushButton#logsButton:hover {{
                 background: {self.theme.soft_btn_hover};
             }}
-            QPushButton#friendsButton:pressed, QPushButton#friendCustomButton:pressed, QPushButton#logsButton:pressed, QPushButton#saveSettingsButton:pressed, QPushButton#repairLaunchButton:pressed, QPushButton#friendCreateButton:pressed {{
+            QPushButton#friendsButton:pressed, QPushButton#friendCustomButton:pressed, QPushButton#logsButton:pressed, QPushButton#saveSettingsButton:pressed, QPushButton#repairLaunchButton:pressed, QPushButton#resetConfigButton:pressed, QPushButton#friendCreateButton:pressed {{
                 padding-top: 13px;
                 padding-bottom: 11px;
             }}
@@ -8220,6 +8315,14 @@ class MainWindow(QWidget):
                 border: 1px solid {self.theme.border};
             }}
             QPushButton#repairLaunchButton:hover {{
+                background: {self.theme.soft_btn_hover};
+            }}
+            QPushButton#resetConfigButton {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.red};
+                border: 1px solid {self.theme.border};
+            }}
+            QPushButton#resetConfigButton:hover {{
                 background: {self.theme.soft_btn_hover};
             }}
             QLabel#launchChoiceStats {{
@@ -9144,41 +9247,17 @@ class MainWindow(QWidget):
 
     def refresh_onboarding_install_rows(self, status: dict) -> None:
         comfy_ready = bool(status.get("comfy_ready"))
-        manager_ready = bool(status.get("manager_ready"))
         if "comfy" in self.onboarding_install_rows:
             self.onboarding_install_rows["comfy"].set_link(str(status.get("source_url", "") or COMFYUI_PORTABLE_URL))
-        if "manager" in self.onboarding_install_rows:
-            self.onboarding_install_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
         if "comfy" in self.onboarding_install_rows:
             if comfy_ready and status.get("comfy_update_available"):
                 self.onboarding_install_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Есть необязательное обновление ComfyUI."), "update")
             else:
                 self.onboarding_install_rows["comfy"].set_state(comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable ComfyUI")
-        if "manager" in self.onboarding_install_rows:
-            self.onboarding_install_rows["manager"].set_state(
-                manager_ready,
-                "Manager уже установлен" if manager_ready else ("Сначала нужен portable ComfyUI" if not comfy_ready else "Будет поставлен в custom_nodes"),
-                "ready" if manager_ready else "missing",
-            )
-        for model in status.get("models", []):
-            row = self.onboarding_install_rows.get(f"model:{model['title']}")
-            if not row:
-                continue
-            row.set_link(str(model.get("url", "")))
-            if model.get("ready"):
-                row.set_state(True, "Файл уже на месте.", "ready")
-            elif not model.get("download_checked", False):
-                row.set_state(False, "Проверяем прямую ссылку на скачивание.", "missing")
-            elif not model.get("download_available", True):
-                row.set_state(False, str(model.get("download_message", "") or "Сейчас скачать нельзя: ссылка недоступна."), "unavailable")
-            elif not comfy_ready:
-                row.set_state(False, "Сначала нужен portable ComfyUI.", "missing")
-            else:
-                row.set_state(False, "Будет скачан и положен в нужную папку.", "missing")
-        if comfy_ready and status.get("comfy_update_available") and comfy_core_missing_count(status) == 0:
-            summary = "Comfy готов. Обновление можно поставить позже."
+        if comfy_ready and status.get("comfy_update_available"):
+            summary = "Portable ComfyUI найден. Обновление можно поставить позже."
         else:
-            summary = "Все для Comfy уже готово." if comfy_core_missing_count(status) == 0 else f"Нужно доставить компонентов: {comfy_core_missing_count(status)}."
+            summary = "Portable ComfyUI готов." if comfy_ready else "Нужно скачать Portable ComfyUI."
         self.onboarding_install_section.set_summary(summary)
         if not self.install_setup_inflight:
             self.onboarding_install_section.clear_progress()
@@ -9254,13 +9333,16 @@ class MainWindow(QWidget):
     def refresh_onboarding_flow(self) -> None:
         status = cached_comfy_setup_status(self.config, force=True)
         self.refresh_onboarding_install_rows(status)
-        enough_space, free_bytes, needed_bytes = has_enough_space_for_setup(status)
+        anchor = current_comfy_root(self.config) or BASE_DIR
+        free_bytes = free_bytes_for_path(anchor)
+        needed_bytes = 0 if not comfy_portable_has_missing(status) else PORTABLE_SIZE_HINT_BYTES + ONBOARDING_STORAGE_HEADROOM_BYTES
+        enough_space = needed_bytes <= 0 or free_bytes >= needed_bytes
         self.onboarding_space_stats.setText(f"Свободно: {format_bytes(free_bytes)}\nНужно примерно: {format_bytes(needed_bytes)}")
         current_root = current_comfy_root(self.config)
         self.onboarding_install_path.setText(
             f"Portable-папка: {current_root}" if current_root else "Portable-папка пока не найдена. Можно выбрать существующую или поставить все с нуля."
         )
-        if not comfy_core_has_missing(status):
+        if not comfy_portable_has_missing(status):
             self.set_onboarding_step("mode")
             return
         if not enough_space:
@@ -9286,7 +9368,7 @@ class MainWindow(QWidget):
         self.load_controls_from_config(force=True)
         self.request_refresh_view()
         self.refresh_onboarding_flow()
-        if not comfy_core_has_missing(cached_comfy_setup_status(self.config, force=True)):
+        if not comfy_portable_has_missing(cached_comfy_setup_status(self.config, force=True)):
             self.set_onboarding_step("mode")
 
     def begin_onboarding_install(self) -> None:
@@ -9307,7 +9389,7 @@ class MainWindow(QWidget):
             self.poll_timer.stop()
         self.install_setup_eta = estimate_setup_eta(cached_comfy_setup_status(self.config, force=True))
         self.install_setup_progress_percent = 0
-        self.install_setup_progress_detail = "Ставим Comfy и нужные файлы."
+        self.install_setup_progress_detail = "Скачиваем Portable ComfyUI."
         self.install_setup_progress_meta = f"Примерное время: {self.install_setup_eta}"
         self.install_setup_last_scope = "comfy"
         self.install_setup_last_message = ""
@@ -9319,7 +9401,7 @@ class MainWindow(QWidget):
         self.onboarding_install_start_button.setText("Установка...")
         self.update_install_button()
         self.run_background(
-            lambda progress, current_parent=install_parent: install_comfy_core_setup(current_parent, progress),
+            lambda progress, current_parent=install_parent: install_comfy_portable_setup(current_parent, progress),
             job_kind="installsetup:comfy",
             set_busy=False,
             show_toast=False,
@@ -9685,6 +9767,8 @@ class MainWindow(QWidget):
         self.update_action_button()
         if hasattr(self, "repair_launch_button"):
             self.repair_launch_button.setEnabled(not busy)
+        if hasattr(self, "reset_config_button"):
+            self.reset_config_button.setEnabled(not busy)
         if self.latest_snap:
             self.update_friend_panel_state(self.latest_snap)
             self.update_friends_button(self.latest_snap)
@@ -9863,6 +9947,11 @@ class MainWindow(QWidget):
                 self.update_banner_subtitle.setText(message)
                 self.update_banner_install_button.setText("Перезапуск...")
                 QTimer.singleShot(180, QApplication.instance().quit)
+        elif kind == "resetconfig" and not is_error:
+            self.config = load_config()
+            self.state_cache = load_state()
+            self.onboarding_dismissed = False
+            self.load_controls_from_config(force=True)
         if self.busy:
             self.set_busy(False)
         if kind == "autorestart" and is_error and load_state().get("desired_running"):
@@ -9871,6 +9960,10 @@ class MainWindow(QWidget):
             schedule_friend_retry(meta, message)
         if kind == "installsetup" and meta == "comfy" and not is_error and self.launch_choice_open and self.onboarding_step == "install":
             self.set_onboarding_step("mode")
+        if kind == "resetconfig" and not is_error:
+            self.set_drawer_open(False)
+            self.refresh_onboarding_flow()
+            self.set_launch_choice_open(True)
         self.request_refresh_view()
         if not silent:
             self.show_toast(message, is_error)
@@ -9899,6 +9992,11 @@ class MainWindow(QWidget):
         if not self.save_settings(silent=True):
             return
         self.run_background(repair_launch, job_kind="repair", set_busy=True, show_toast=True)
+
+    def on_reset_config_clicked(self) -> None:
+        if self.busy:
+            return
+        self.run_background(reset_portal_config, job_kind="resetconfig", set_busy=True, show_toast=True)
 
     def copy_friend_link_by_id(self, link_id: str) -> None:
         snap = self.current_snapshot()
@@ -10228,7 +10326,7 @@ class MainWindow(QWidget):
             self.log_hint.setText(log_text)
             self.last_log_hint = log_text
 
-        if self.logs_view_open or snap["logs"].get("comfy_full"):
+        if snap["logs"].get("comfy_full"):
             comfy_full_log = snap["logs"].get("comfy_full", "").strip()
             self.apply_comfy_log_viewer_text(comfy_full_log or "Логи ComfyUI появятся здесь после запуска.")
 
