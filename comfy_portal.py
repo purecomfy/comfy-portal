@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -3588,13 +3588,19 @@ def install_comfy_portable_setup(install_parent: Path | None = None, progress=No
     status = cached_comfy_setup_status(force=True)
     update_available = bool(root and (force_update or status.get("comfy_update_available")))
 
+    def emit(fraction: float, detail: str, meta: str = "") -> None:
+        if not progress:
+            return
+        percent = int(max(0, min(100, round(float(fraction) * 100))))
+        progress(detail, percent, meta)
+
     if not root:
         if install_parent is None:
             raise RuntimeError("Выбери папку, куда скачать portable ComfyUI.")
-        root = install_comfyui_portable(install_parent, progress=progress)
+        root = install_comfyui_portable(install_parent, progress=emit)
         message = f"Portable ComfyUI готов: {root}"
     elif update_available:
-        root = install_comfyui_portable(root.parent, progress=progress, force_update=True)
+        root = install_comfyui_portable(root.parent, progress=emit, force_update=True)
         message = "Portable ComfyUI обновлен."
     else:
         config = load_config()
@@ -4126,16 +4132,18 @@ def comfy_internal_log_candidates(root: Path | None) -> list[Path]:
 
 def combined_comfy_log_text(max_bytes: int = 65536, root: Path | None = None) -> str:
     parts: list[str] = []
-    stdout_text = read_text_tail(COMFY_OUT, max_bytes=max_bytes // 2)
-    stderr_text = read_text_tail(COMFY_ERR, max_bytes=max_bytes // 2)
-    if stdout_text.strip():
-        parts.append("[stdout]\n" + stdout_text.strip())
-    if stderr_text.strip():
-        parts.append("[stderr]\n" + stderr_text.strip())
+    internal_parts: list[str] = []
     for path in comfy_internal_log_candidates(root):
         text = read_text_tail(path, max_bytes=max(8192, max_bytes // 3)).strip()
         if text:
-            parts.append(f"[{path.name}]\n{text}")
+            internal_parts.append(f"[{path.name}]\n{text}")
+    stdout_text = read_text_tail(COMFY_OUT, max_bytes=max_bytes // 2)
+    stderr_text = read_text_tail(COMFY_ERR, max_bytes=max_bytes // 2)
+    if internal_parts:
+        parts.extend(internal_parts)
+    live_parts = [text.strip() for text in (stderr_text, stdout_text) if text.strip()]
+    if live_parts:
+        parts.append("[portal live]\n" + "\n".join(live_parts).strip())
     if parts:
         return "\n\n".join(parts).strip()
     comfy_pids = cached_process_scan("comfy", force=True)
@@ -7398,7 +7406,9 @@ class MainWindow(QWidget):
         self.logs_viewer = QPlainTextEdit()
         self.logs_viewer.setObjectName("logsViewer")
         self.logs_viewer.setReadOnly(True)
-        self.logs_viewer.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.logs_viewer.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.logs_viewer.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.logs_viewer.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.logs_viewer.setPlaceholderText("Логи ComfyUI появятся здесь после запуска.")
         logs_card_layout.addWidget(self.logs_viewer, 1)
 
@@ -8489,8 +8499,8 @@ class MainWindow(QWidget):
                 background: {self.theme.surface_alt};
                 color: {self.theme.text};
                 border: 1px solid {self.theme.border};
-                border-radius: 22px;
-                padding: 14px;
+                border-radius: 18px;
+                padding: 12px;
                 selection-background-color: {self.theme.blue};
                 font-family: 'Cascadia Mono', 'Consolas';
                 font-size: 12px;
@@ -8498,19 +8508,19 @@ class MainWindow(QWidget):
             QPlainTextEdit#logsViewer QScrollBar:vertical, QPlainTextEdit#logsViewer QScrollBar:horizontal {{
                 background: transparent;
                 border: none;
-                margin: 8px;
+                margin: 2px;
             }}
             QPlainTextEdit#logsViewer QScrollBar:vertical {{
-                width: 10px;
+                width: 14px;
             }}
             QPlainTextEdit#logsViewer QScrollBar:horizontal {{
-                height: 10px;
+                height: 14px;
             }}
             QPlainTextEdit#logsViewer QScrollBar::handle:vertical, QPlainTextEdit#logsViewer QScrollBar::handle:horizontal {{
                 background: {self.theme.border};
-                border-radius: 5px;
-                min-width: 36px;
-                min-height: 36px;
+                border-radius: 7px;
+                min-width: 48px;
+                min-height: 48px;
             }}
             QPlainTextEdit#logsViewer QScrollBar::handle:vertical:hover, QPlainTextEdit#logsViewer QScrollBar::handle:horizontal:hover {{
                 background: {self.theme.muted};
@@ -9131,10 +9141,18 @@ class MainWindow(QWidget):
         if self.last_comfy_log_full == normalized_text:
             return
         log_scroll = self.logs_viewer.verticalScrollBar()
+        if log_scroll.isSliderDown():
+            return
+        previous_value = log_scroll.value()
+        horizontal_scroll = self.logs_viewer.horizontalScrollBar()
+        previous_horizontal_value = horizontal_scroll.value()
         stick_to_bottom = log_scroll.value() >= max(0, log_scroll.maximum() - 8)
         self.logs_viewer.setPlainText(normalized_text)
         if stick_to_bottom:
             log_scroll.setValue(log_scroll.maximum())
+        else:
+            log_scroll.setValue(min(previous_value, log_scroll.maximum()))
+        horizontal_scroll.setValue(min(previous_horizontal_value, horizontal_scroll.maximum()))
         self.last_comfy_log_full = normalized_text
 
     def refresh_live_logs_fast(self) -> None:
