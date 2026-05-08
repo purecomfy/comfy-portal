@@ -3927,7 +3927,7 @@ def detect_tunnel_url(path: Path, preferred_subdomain: str = "") -> str:
         for url in reversed(matches):
             if extract_public_subdomain(url) == preferred:
                 return url
-        return ""
+        return matches[-1]
     return matches[-1]
 
 
@@ -3961,7 +3961,7 @@ def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
     probes = (
         (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
         (f"{clean_url}/queue", ("queue_running", "queue_pending", "running", "pending")),
-        (clean_url, ("comfy", "<!doctype html", "<html")),
+        (clean_url, ("comfyui", "comfyui_frontend_package")),
     )
     for probe_url, markers in probes:
         try:
