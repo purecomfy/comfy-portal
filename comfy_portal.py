@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "0.9.0"
+APP_VERSION = "1.0.0"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -8375,7 +8375,7 @@ class MainWindow(QWidget):
             }}
             QPushButton#repairLaunchButton {{
                 background: {self.theme.soft_btn};
-                color: {self.theme.text};
+                color: {self.theme.green};
                 border: 1px solid {self.theme.border};
             }}
             QPushButton#repairLaunchButton:hover {{
