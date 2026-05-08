@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -490,6 +490,48 @@ REQUIRED_NODE_SPECS = (
         "folder": "virtuoso-nodes",
         "repo": "https://github.com/chrisfreilich/virtuoso-nodes.git",
         "aliases": ["virtuoso-nodes", "Virtuoso Nodes"],
+    },
+    {
+        "title": "ComfyUI QualityOfLifeSuit Omar92",
+        "cnr_id": "comfyui-qualityoflifesuit-omar92",
+        "folder": "ComfyUI-QualityOfLifeSuit_Omar92",
+        "repo": "https://github.com/omar92/ComfyUI-QualityOfLifeSuit_Omar92.git",
+        "aliases": ["ComfyUI-QualityOfLifeSuit_Omar92", "QualityOfLifeSuit", "QOL Omar92"],
+    },
+    {
+        "title": "ComfyUI WD14 Tagger",
+        "cnr_id": "comfyui-wd14-tagger",
+        "folder": "ComfyUI-WD14-Tagger",
+        "repo": "https://github.com/pythongosssss/ComfyUI-WD14-Tagger.git",
+        "aliases": ["ComfyUI-WD14-Tagger", "WD14 Tagger", "WD14Tagger"],
+    },
+    {
+        "title": "ComfyUI Advanced ControlNet",
+        "cnr_id": "comfyui-advanced-controlnet",
+        "folder": "ComfyUI-Advanced-ControlNet",
+        "repo": "https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet.git",
+        "aliases": ["ComfyUI-Advanced-ControlNet", "Advanced ControlNet", "ACN"],
+    },
+    {
+        "title": "ComfyUI tinyterraNodes",
+        "cnr_id": "comfyui-tinyterranodes",
+        "folder": "ComfyUI_tinyterraNodes",
+        "repo": "https://github.com/TinyTerra/ComfyUI_tinyterraNodes.git",
+        "aliases": ["ComfyUI_tinyterraNodes", "tinyterraNodes", "ttN"],
+    },
+    {
+        "title": "ComfyUI DepthAnythingV2",
+        "cnr_id": "comfyui-depthanythingv2",
+        "folder": "ComfyUI-DepthAnythingV2",
+        "repo": "https://github.com/kijai/ComfyUI-DepthAnythingV2.git",
+        "aliases": ["ComfyUI-DepthAnythingV2", "DepthAnythingV2", "Depth Anything V2"],
+    },
+    {
+        "title": "ComfyUI Mira",
+        "cnr_id": "comfyui-mira",
+        "folder": "ComfyUI_Mira",
+        "repo": "https://github.com/mirabarukaso/ComfyUI_Mira.git",
+        "aliases": ["ComfyUI_Mira", "Mira"],
     },
     {
         "title": "Comfy Image Saver",
@@ -9065,7 +9107,7 @@ class MainWindow(QWidget):
             self.logs_fast_timer.stop()
         if self.setup_view_open:
             self.request_setup_status_refresh(force_links=True)
-        self.request_refresh_view(include_logs=False)
+        self.request_refresh_view(include_logs=self.logs_view_open or self.drawer_open)
 
     def update_logs_button(self) -> None:
         snap = self.latest_snap or self.current_snapshot()
@@ -9156,6 +9198,8 @@ class MainWindow(QWidget):
             self.drawer_fade_anim.setEndValue(0.0)
         self.drawer_anim.start()
         self.drawer_fade_anim.start()
+        if opened:
+            self.request_refresh_view(include_logs=True)
 
     def set_friends_panel_open(self, opened: bool) -> None:
         if opened and self.drawer_open:
@@ -10173,7 +10217,7 @@ class MainWindow(QWidget):
 
     def request_refresh_view(self, include_logs: bool | None = None) -> None:
         if include_logs is None:
-            include_logs = False
+            include_logs = self.logs_view_open or self.drawer_open
         include_logs = bool(include_logs)
         if self.refresh_inflight:
             self.refresh_requested = True
