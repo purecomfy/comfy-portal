@@ -2794,94 +2794,6 @@ def set_windows_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> None:
         pass
 
 
-def ps_quote(value: str | Path) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def prepare_release_update(release_info: dict[str, object]) -> str:
-    tag_name = str(release_info.get("tag_name", "") or "").strip() or "latest"
-    temp_dir = DATA_DIR / "updates"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    current_pid = os.getpid()
-
-    if running_portable_bundle():
-        asset_url = str(release_info.get("portable_url", "") or "")
-        if not asset_url:
-            raise RuntimeError("Для portable-обновления не найден zip asset в релизе.")
-        zip_path = temp_dir / f"Comfy.Portal.{tag_name}.zip"
-        download_file(asset_url, zip_path)
-        script_path = temp_dir / "apply_portable_update.ps1"
-        target_dir = BASE_DIR
-        target_exe = target_dir / "Comfy Portal.exe"
-        stage_dir = temp_dir / f"stage_{tag_name}"
-        script_text = f"""
-$ErrorActionPreference = 'Stop'
-$pidToWait = {current_pid}
-$zipPath = {ps_quote(zip_path)}
-$stageDir = {ps_quote(stage_dir)}
-$targetDir = {ps_quote(target_dir)}
-$targetExe = {ps_quote(target_exe)}
-while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 350 }}
-if (Test-Path -LiteralPath $stageDir) {{ Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue }}
-Expand-Archive -LiteralPath $zipPath -DestinationPath $stageDir -Force
-$sourceDir = $stageDir
-if (-not (Test-Path -LiteralPath (Join-Path $sourceDir 'Comfy Portal.exe'))) {{
-    $candidateDir = Get-ChildItem -LiteralPath $stageDir -Directory | Where-Object {{
-        Test-Path -LiteralPath (Join-Path $_.FullName 'Comfy Portal.exe')
-    }} | Select-Object -First 1
-    if ($candidateDir) {{
-        $sourceDir = $candidateDir.FullName
-    }}
-}}
-if (-not (Test-Path -LiteralPath (Join-Path $sourceDir 'Comfy Portal.exe'))) {{
-    throw 'В архиве обновления не найдена папка Comfy Portal.'
-}}
-Get-ChildItem -LiteralPath $sourceDir | ForEach-Object {{
-    Copy-Item -LiteralPath $_.FullName -Destination $targetDir -Recurse -Force
-}}
-Start-Sleep -Milliseconds 250
-if (Test-Path -LiteralPath $targetExe) {{
-    Start-Process -FilePath $targetExe
-}}
-"""
-    else:
-        asset_url = str(release_info.get("exe_url", "") or "")
-        if not asset_url:
-            raise RuntimeError("Для этой сборки в релизе нет отдельного .exe для автообновления.")
-        exe_path = temp_dir / "Comfy Portal.new.exe"
-        download_file(asset_url, exe_path)
-        script_path = temp_dir / "apply_onefile_update.ps1"
-        current_exe = Path(sys.executable).resolve()
-        backup_exe = current_exe.with_suffix(".old.exe")
-        script_text = f"""
-$ErrorActionPreference = 'Stop'
-$pidToWait = {current_pid}
-$newExe = {ps_quote(exe_path)}
-$targetExe = {ps_quote(current_exe)}
-$backupExe = {ps_quote(backup_exe)}
-while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 350 }}
-if (Test-Path -LiteralPath $backupExe) {{ Remove-Item -LiteralPath $backupExe -Force -ErrorAction SilentlyContinue }}
-if (Test-Path -LiteralPath $targetExe) {{ Move-Item -LiteralPath $targetExe -Destination $backupExe -Force }}
-Move-Item -LiteralPath $newExe -Destination $targetExe -Force
-Start-Sleep -Milliseconds 250
-Start-Process -FilePath $targetExe
-"""
-    script_path.write_text(script_text.strip(), encoding="utf-8")
-    subprocess.Popen(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script_path),
-        ],
-        close_fds=True,
-        **hidden_subprocess_kwargs(new_process_group=True),
-    )
-    return f"Обновление {tag_name} скачано. Перезапускаем портал..."
-
-
 def seven_zip_executable_candidates() -> list[str]:
     candidates: list[str] = []
     seen: set[str] = set()
@@ -7058,7 +6970,6 @@ class MainWindow(QWidget):
         self.release_info: dict[str, object] | None = None
         self.update_banner_kind = "portal"
         self.update_check_inflight = False
-        self.update_download_inflight = False
         self.update_banner_dismissed_tag = ""
         self.onboarding_step = "mode"
         self.onboarding_dismissed = False
@@ -7458,7 +7369,7 @@ class MainWindow(QWidget):
         self.update_banner_close.clicked.connect(self.dismiss_update_banner)
         update_header_layout.addWidget(self.update_banner_title, 1)
         update_header_layout.addWidget(self.update_banner_close, 0, Qt.AlignRight)
-        self.update_banner_subtitle = QLabel("На GitHub вышел новый релиз Comfy Portal.")
+        self.update_banner_subtitle = QLabel("Новая версия доступна на GitHub.")
         self.update_banner_subtitle.setObjectName("updateBannerSubtitle")
         self.update_banner_subtitle.setWordWrap(True)
         update_actions_layout = QHBoxLayout()
@@ -9595,9 +9506,9 @@ class MainWindow(QWidget):
             self.update_banner_install_button.setText("Обновить Comfy")
         else:
             self.update_banner_title.setText(f"Доступно обновление {version_text}" if version_text else "Доступно обновление")
-            self.update_banner_subtitle.setText("На GitHub вышел новый релиз. Можно скачать и обновить портал прямо из приложения.")
-            self.update_banner_view_button.setText("Что нового")
-            self.update_banner_install_button.setText("Обновить")
+            self.update_banner_subtitle.setText("Новая версия доступна на GitHub. Скачай архив релиза и замени файлы вручную.")
+            self.update_banner_view_button.setText("Релиз")
+            self.update_banner_install_button.setText("Скачать")
         self.update_banner_install_button.setEnabled(True)
         self.update_banner.show()
         self.place_update_banner()
@@ -9608,17 +9519,14 @@ class MainWindow(QWidget):
         self.update_banner.hide()
 
     def install_github_update(self) -> None:
-        if self.update_download_inflight or not self.release_info:
+        if not self.release_info:
             return
         if self.update_banner_kind == "comfy":
             self.update_banner.hide()
             self.set_setup_view_open(True)
             self.start_setup_install("comfy", force_comfy_update=True)
             return
-        self.update_download_inflight = True
-        self.update_banner_install_button.setEnabled(False)
-        self.update_banner_install_button.setText("Скачиваем...")
-        self.run_background(lambda: prepare_release_update(self.release_info or {}), job_kind="appupdate", set_busy=False, show_toast=False)
+        self.open_github_releases()
 
     def open_comfy_guide(self) -> None:
         self.set_setup_view_open(True)
@@ -10013,14 +9921,6 @@ class MainWindow(QWidget):
             self.install_setup_scope = ""
             if should_resume_poll and self.overlay_animation_count == 0 and not self.poll_timer.isActive():
                 self.poll_timer.start(POLL_MS)
-        elif kind == "appupdate":
-            self.update_download_inflight = False
-            self.update_banner_install_button.setEnabled(True)
-            self.update_banner_install_button.setText("Обновить")
-            if not is_error:
-                self.update_banner_subtitle.setText(message)
-                self.update_banner_install_button.setText("Перезапуск...")
-                QTimer.singleShot(180, QApplication.instance().quit)
         elif kind == "resetconfig" and not is_error:
             self.config = load_config()
             self.state_cache = load_state()
