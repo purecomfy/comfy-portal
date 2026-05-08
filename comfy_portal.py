@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "2.2.0"
+APP_VERSION = "0.9.0"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -2824,7 +2824,19 @@ $targetExe = {ps_quote(target_exe)}
 while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 350 }}
 if (Test-Path -LiteralPath $stageDir) {{ Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue }}
 Expand-Archive -LiteralPath $zipPath -DestinationPath $stageDir -Force
-Get-ChildItem -LiteralPath $stageDir | ForEach-Object {{
+$sourceDir = $stageDir
+if (-not (Test-Path -LiteralPath (Join-Path $sourceDir 'Comfy Portal.exe'))) {{
+    $candidateDir = Get-ChildItem -LiteralPath $stageDir -Directory | Where-Object {{
+        Test-Path -LiteralPath (Join-Path $_.FullName 'Comfy Portal.exe')
+    }} | Select-Object -First 1
+    if ($candidateDir) {{
+        $sourceDir = $candidateDir.FullName
+    }}
+}}
+if (-not (Test-Path -LiteralPath (Join-Path $sourceDir 'Comfy Portal.exe'))) {{
+    throw 'В архиве обновления не найдена папка Comfy Portal.'
+}}
+Get-ChildItem -LiteralPath $sourceDir | ForEach-Object {{
     Copy-Item -LiteralPath $_.FullName -Destination $targetDir -Recurse -Force
 }}
 Start-Sleep -Milliseconds 250
