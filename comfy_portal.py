@@ -142,6 +142,7 @@ MODEL_SIZE_HINTS = {
     "mopMixtureOfPerverts_v20.safetensors": 2 * 1024 * 1024 * 1024,
     "xxxRay_dmd2.safetensors": 2 * 1024 * 1024 * 1024,
     "novaAnimeXL_ilV170.safetensors": 2 * 1024 * 1024 * 1024,
+    "intorealism.safetensors": 12 * 1024 * 1024 * 1024,
     "redcraft_ernieRedmix.safetensors": 4 * 1024 * 1024 * 1024,
     "redcraft_ernieRedmix_txt.safetensors": 8 * 1024 * 1024 * 1024,
     "flux2-tiny-vae.safetensors": 350 * 1024 * 1024,
@@ -246,6 +247,15 @@ STARTER_MODEL_SPECS = (
         "relative_dir": ("ComfyUI", "models", "checkpoints"),
         "detect_names": ("novaAnimeXL_ilV170.safetensors",),
         "detect_contains_any": ("novaanimexl", "novaanime", "2741698"),
+        "detect_extensions": (".safetensors", ".ckpt"),
+    },
+    {
+        "title": "intorealism.safetensors",
+        "filename": "intorealism.safetensors",
+        "url": "https://civitai.com/api/download/models/2835157?type=Model&format=SafeTensor&size=full&fp=fp8",
+        "relative_dir": ("ComfyUI", "models", "unet"),
+        "detect_names": ("intorealism.safetensors",),
+        "detect_contains_any": ("intorealism", "2835157"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {

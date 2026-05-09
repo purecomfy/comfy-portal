@@ -292,6 +292,7 @@ MODELS=(
   "mopMixtureOfPerverts_v20.safetensors|mopMixtureOfPerverts_v20.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2159501?type=Model&format=SafeTensor&size=pruned&fp=fp16"
   "xxxRay_dmd2.safetensors|xxxRay_dmd2.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/1624818?type=Model&format=SafeTensor&size=full&fp=fp16"
   "novaAnimeXL_ilV170.safetensors|novaAnimeXL_ilV170.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2741698?type=Model&format=SafeTensor&size=pruned&fp=fp16"
+  "Intorealism UNet|intorealism.safetensors|ComfyUI/models/unet|https://civitai.com/api/download/models/2835157?type=Model&format=SafeTensor&size=full&fp=fp8"
   "redcraft_ernieRedmix.safetensors|redcraft_ernieRedmix.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2891710?type=Diffusion%20Model&format=Other&fp=fp8"
   "redcraft_ernieRedmix_txt.safetensors|redcraft_ernieRedmix_txt.safetensors|ComfyUI/models/text_encoders|https://civitai.red/api/download/models/2891710?fileId=2773413"
   "flux2-tiny-vae.safetensors|flux2-tiny-vae.safetensors|ComfyUI/models/vae|https://civitai.red/api/download/models/2891710?fileId=2773335"
