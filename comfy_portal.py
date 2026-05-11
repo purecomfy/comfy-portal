@@ -3969,9 +3969,9 @@ def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
         timeout_seconds = max(timeout_seconds, 8.0)
     headers = {"User-Agent": DOWNLOAD_USER_AGENT}
     probes = (
-        (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
         (f"{clean_url}/queue", ("queue_running", "queue_pending", "running", "pending")),
         (clean_url, ("comfyui", "comfyui_frontend_package")),
+        (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
     )
     for probe_url, markers in probes:
         try:
@@ -3984,6 +3984,20 @@ def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
         except Exception:
             continue
     return False
+
+
+def cloudflare_tunnel_assumed_ready(url: str, config: dict | None = None, active: bool = True, min_age_seconds: float = 4.0) -> bool:
+    """Cloudflare Quick Tunnel can serve UI/API while Python HTTPS probes fail on Windows.
+
+    Treat a detected trycloudflare URL as usable when the tunnel process is still alive,
+    it had a short warm-up window, and the local ComfyUI endpoint is healthy.
+    """
+    if not active or not is_cloudflare_tunnel_url(url):
+        return False
+    config = config or load_config()
+    if main_tunnel_process_age() < min_age_seconds:
+        return False
+    return comfy_http_ready(int(config.get("port", 8188) or 8188), timeout_seconds=1.5)
 
 
 def cached_public_tunnel_ready(url: str, force: bool = False) -> bool:
@@ -4006,20 +4020,37 @@ def wait_for_public_tunnel_url(
     timeout_seconds: float = 20.0,
     interval_seconds: float = 0.35,
     use_expected_fallback: bool = True,
+    provider: str = TUNNEL_PROVIDER_LOCALTUNNEL,
+    config: dict | None = None,
 ) -> str:
     log_paths = tuple(log_path) if isinstance(log_path, (tuple, list)) else (log_path,)
     deadline = time.time() + timeout_seconds
     last_detected = ""
+    provider = normalize_tunnel_provider(provider)
+    first_detected_at = 0.0
     while time.time() < deadline:
         detected = detect_tunnel_url_from_logs(log_paths, subdomain)
         if not detected and use_expected_fallback:
             detected = expected_tunnel_url(subdomain)
         if detected:
+            if detected != last_detected:
+                first_detected_at = time.time()
             last_detected = detected
             if cached_public_tunnel_ready(detected, force=True):
                 return detected
+            if (
+                provider == TUNNEL_PROVIDER_CLOUDFLARE
+                and first_detected_at
+                and time.time() - first_detected_at >= 4.0
+                and cloudflare_tunnel_assumed_ready(detected, config=config, active=True, min_age_seconds=4.0)
+            ):
+                return detected
         time.sleep(interval_seconds)
-    return last_detected if last_detected and cached_public_tunnel_ready(last_detected, force=True) else ""
+    if last_detected and cached_public_tunnel_ready(last_detected, force=True):
+        return last_detected
+    if provider == TUNNEL_PROVIDER_CLOUDFLARE and last_detected and cloudflare_tunnel_assumed_ready(last_detected, config=config, active=True):
+        return last_detected
+    return ""
 
 
 def tail_text(path: Path, lines: int = 4) -> str:
@@ -4416,7 +4447,14 @@ def start_tunnel_if_needed() -> str:
             raise RuntimeError("ComfyUI еще не отвечает по HTTP и не готов для туннеля.")
         if any_tunnel_process(state):
             detected_url = main_tunnel_candidate_url(config, state, active=True)
-            if detected_url and cached_public_tunnel_ready(detected_url, force=True):
+            detected_ready = bool(
+                detected_url
+                and (
+                    cached_public_tunnel_ready(detected_url, force=True)
+                    or cloudflare_tunnel_assumed_ready(detected_url, config=config, active=True)
+                )
+            )
+            if detected_ready:
                 if state.get("last_url") != detected_url:
                     state["last_url"] = detected_url
                     state["last_tunnel_error"] = ""
@@ -4442,6 +4480,8 @@ def start_tunnel_if_needed() -> str:
             config["subdomain"] if provider == TUNNEL_PROVIDER_LOCALTUNNEL else "",
             timeout_seconds=35.0 if provider == TUNNEL_PROVIDER_CLOUDFLARE else 22.0,
             use_expected_fallback=(provider == TUNNEL_PROVIDER_LOCALTUNNEL),
+            provider=provider,
+            config=config,
         )
         if ready_url:
             state = load_state()
@@ -4449,6 +4489,36 @@ def start_tunnel_if_needed() -> str:
             state["last_tunnel_error"] = ""
             save_state(state)
             return "Туннель готов."
+        if provider == TUNNEL_PROVIDER_LOCALTUNNEL:
+            localtunnel_error = summarize_error_tail(TUNNEL_ERR) or "LocalTunnel did not publish a reachable URL."
+            try:
+                kill_process_tree(psutil.Process(proc.pid))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            cached_process_scan("tunnel", force=True)
+            config["tunnel_provider"] = TUNNEL_PROVIDER_CLOUDFLARE
+            save_config(config)
+            ensure_cloudflared_available()
+            proc = launch_cloudflare_tunnel(comfy_root, config["port"], TUNNEL_OUT, TUNNEL_ERR)
+            state = load_state()
+            state["tunnel_pid"] = proc.pid
+            state["tunnel_started_at"] = time.time()
+            state["last_tunnel_error"] = localtunnel_error
+            save_state(state)
+            ready_url = wait_for_public_tunnel_url(
+                (TUNNEL_OUT, TUNNEL_ERR),
+                "",
+                timeout_seconds=35.0,
+                use_expected_fallback=False,
+                provider=TUNNEL_PROVIDER_CLOUDFLARE,
+                config=config,
+            )
+            if ready_url:
+                state = load_state()
+                state["last_url"] = ready_url
+                state["last_tunnel_error"] = ""
+                save_state(state)
+                return "LocalTunnel did not respond; Cloudflare Tunnel is ready."
         if not pid_is_running(proc.pid):
             error_text = summarize_error_tail(TUNNEL_ERR) or "Туннель не успел подняться."
             schedule_tunnel_retry(error_text)
@@ -4805,15 +4875,23 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
     main_subdomain = normalize_subdomain(config.get("subdomain", ""))
     tunnel_provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
     candidate_main_url = main_tunnel_candidate_url(config, state, active=tunnel_active)
-    main_url_ready = bool(candidate_main_url and cached_public_tunnel_ready(candidate_main_url))
+    main_url_ready = bool(
+        candidate_main_url
+        and (
+            cached_public_tunnel_ready(candidate_main_url)
+            or (
+                tunnel_provider == TUNNEL_PROVIDER_CLOUDFLARE
+                and cloudflare_tunnel_assumed_ready(candidate_main_url, config=config, active=tunnel_active)
+            )
+        )
+    )
     url = candidate_main_url if tunnel_active and candidate_main_url else ""
     tunnel_age = main_tunnel_process_age(state) if tunnel_active else 0.0
     tunnel_needs_restart = bool(
         tunnel_active
         and bool(state.get("desired_running"))
         and internet_ok
-        and candidate_main_url
-        and not main_url_ready
+        and (not candidate_main_url or not main_url_ready)
         and tunnel_age >= TUNNEL_READY_GRACE_SECONDS
     )
     if tunnel_active and main_url_ready:
