@@ -85,8 +85,8 @@ DEFAULT_TUNNEL_RETRY_DELAY = 5.0
 MAX_TUNNEL_RETRY_DELAY = 45.0
 DEFAULT_TUNNEL_PROVIDER = "localtunnel"
 TUNNEL_PROVIDER_LOCALTUNNEL = "localtunnel"
-TUNNEL_PROVIDER_CLOUDFLARE = "cloudflare"
-TUNNEL_PROVIDERS = (TUNNEL_PROVIDER_LOCALTUNNEL, TUNNEL_PROVIDER_CLOUDFLARE)
+TUNNEL_PROVIDERS = (TUNNEL_PROVIDER_LOCALTUNNEL,)
+LOCALTUNNEL_HOST = "http://localtunnel.me"
 MAX_FRIEND_LINKS = 5
 DISCOVER_COMFY_CACHE_TTL = 90.0
 DISCOVER_COMFY_BUDGET_SECONDS = 2.8
@@ -120,8 +120,6 @@ COMFY_PACKAGE_MARKER_NAME = ".comfy_portal_source.json"
 CUSTOM_COMFY_ARCHIVE_NAME = "ComfyPortal.custom_comfy.7z"
 CUSTOM_COMFY_URL_FILENAME = "ComfyPortal.custom_comfy_url.txt"
 COMFYUI_MANAGER_ARCHIVE_URL = "https://github.com/ltdrdata/ComfyUI-Manager/archive/refs/heads/main.zip"
-CLOUDFLARED_WINDOWS_AMD64_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-CLOUDFLARED_TOOL_NAME = "cloudflared.exe"
 DOWNLOAD_USER_AGENT = f"ComfyPortal/{APP_VERSION}"
 BUNDLED_CIVITAI_KEYS_B64 = (
     "NTY0MDAxNDRlMTlkZGFjZDMxZjcwNTNkMTZkMzI5Y2M=",
@@ -708,7 +706,7 @@ def generate_available_default_main_subdomain() -> str:
 def default_config(check_subdomain_availability: bool = False) -> dict:
     return {
         "port": 8188,
-        "subdomain": generate_available_default_main_subdomain() if check_subdomain_availability else generate_default_main_subdomain(),
+        "subdomain": "",
         "tunnel_provider": DEFAULT_TUNNEL_PROVIDER,
         "theme": "light",
         "launch_mode": DEFAULT_LAUNCH_MODE,
@@ -845,7 +843,7 @@ def load_config() -> dict:
     existing_raw = read_json(CONFIG_PATH, {})
     config.update(existing_raw)
     if str(existing_raw.get("subdomain", "")).strip().lower() in LEGACY_DEFAULT_SUBDOMAINS:
-        config["subdomain"] = generate_available_default_main_subdomain()
+        config["subdomain"] = ""
     legacy_keys = normalize_api_key_items(existing_raw.get("civitai_api_key", "")) + normalize_api_key_items(existing_raw.get("civitai_api_keys", ""))
     stored_keys = decode_api_keys_b64(existing_raw.get("civitai_api_keys_b64", []))
     config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys)
@@ -883,32 +881,15 @@ def save_config(config: dict) -> None:
 
 
 def normalize_tunnel_provider(value: object) -> str:
-    clean = str(value or "").strip().lower().replace("-", "_")
-    legacy_map = {
-        "lt": TUNNEL_PROVIDER_LOCALTUNNEL,
-        "local": TUNNEL_PROVIDER_LOCALTUNNEL,
-        "local_tunnel": TUNNEL_PROVIDER_LOCALTUNNEL,
-        "localtunnel": TUNNEL_PROVIDER_LOCALTUNNEL,
-        "loca": TUNNEL_PROVIDER_LOCALTUNNEL,
-        "loca_lt": TUNNEL_PROVIDER_LOCALTUNNEL,
-        "cf": TUNNEL_PROVIDER_CLOUDFLARE,
-        "cloudflare": TUNNEL_PROVIDER_CLOUDFLARE,
-        "cloudflared": TUNNEL_PROVIDER_CLOUDFLARE,
-    }
-    clean = legacy_map.get(clean, clean)
-    return clean if clean in TUNNEL_PROVIDERS else DEFAULT_TUNNEL_PROVIDER
+    return TUNNEL_PROVIDER_LOCALTUNNEL
 
 
 def tunnel_provider_title(provider: object) -> str:
-    provider = normalize_tunnel_provider(provider)
-    return "LocalTunnel" if provider == TUNNEL_PROVIDER_LOCALTUNNEL else "Cloudflare"
+    return "LocalTunnel"
 
 
 def tunnel_provider_description(provider: object) -> str:
-    provider = normalize_tunnel_provider(provider)
-    if provider == TUNNEL_PROVIDER_LOCALTUNNEL:
-        return "LocalTunnel: можно задать свой subdomain, но loca.lt может быть нестабилен."
-    return "Cloudflare: ссылка выдается случайная через trycloudflare.com, зато обычно стабильнее."
+    return "LocalTunnel only. Empty subdomain lets lt generate a random loca.lt link."
 
 
 def normalize_launch_mode(value: str) -> str:
@@ -992,8 +973,8 @@ def friend_url_for_subdomain(subdomain: str) -> str:
     return f"https://{subdomain}.loca.lt" if subdomain else ""
 
 
-def is_cloudflare_tunnel_url(url: str) -> bool:
-    return bool(re.fullmatch(r"https://[a-z0-9-]+\.trycloudflare\.com", str(url or "").strip().rstrip("/"), flags=re.IGNORECASE))
+def is_localtunnel_url(url: str) -> bool:
+    return bool(re.fullmatch(r"https://[a-z0-9-]+\.loca\.lt", str(url or "").strip().rstrip("/"), flags=re.IGNORECASE))
 
 
 def custom_comfy_archive_candidates() -> list[Path]:
@@ -1290,7 +1271,7 @@ def merge_friend_link_entries(updated_entries: list[dict]) -> None:
 
 def normalize_subdomain(value: str) -> str:
     clean = sanitize_subdomain(value)
-    return clean or "comfylocal5618"
+    return clean
 
 
 def is_valid_main_subdomain(value: str) -> bool:
@@ -3739,10 +3720,10 @@ def find_matching_processes(kind: str) -> list[psutil.Process]:
                 matches.append(proc)
         elif kind == "tunnel":
             is_localtunnel = "localtunnel" in cmdline or (name.startswith("node") and "loca.lt" in cmdline)
-            is_cloudflared = name.startswith("cloudflared") and "tunnel" in cmdline and "--url" in cmdline and f":{main_port}" in cmdline
+            localtunnel_main_port = is_localtunnel and f"--port {main_port}" in cmdline
             if is_localtunnel and main_subdomain and tunnel_subdomain == main_subdomain:
                 matches.append(proc)
-            elif is_cloudflared:
+            elif is_localtunnel and not main_subdomain and localtunnel_main_port:
                 matches.append(proc)
         elif kind == "friend_tunnel":
             is_localtunnel = "localtunnel" in cmdline or (name.startswith("node") and "loca.lt" in cmdline)
@@ -3928,7 +3909,7 @@ def detect_tunnel_url(path: Path, preferred_subdomain: str = "") -> str:
     if not path.exists():
         return ""
     content = read_text_tail(path, max_bytes=16384)
-    matches = re.findall(r"https://[a-z0-9-]+\.(?:loca\.lt|trycloudflare\.com)", content, flags=re.IGNORECASE)
+    matches = re.findall(r"https://[a-z0-9-]+\.loca\.lt", content, flags=re.IGNORECASE)
     if not matches:
         return ""
     matches = [url.rstrip("/") for url in matches]
@@ -3955,18 +3936,13 @@ def expected_tunnel_url(subdomain: str) -> str:
 
 def expected_main_tunnel_url(config: dict | None = None) -> str:
     config = config or load_config()
-    provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
-    if provider == TUNNEL_PROVIDER_LOCALTUNNEL:
-        return expected_tunnel_url(str(config.get("subdomain", "")))
-    return ""
+    return expected_tunnel_url(str(config.get("subdomain", "")))
 
 
 def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
     clean_url = str(url or "").strip().rstrip("/")
     if not clean_url:
         return False
-    if is_cloudflare_tunnel_url(clean_url):
-        timeout_seconds = max(timeout_seconds, 8.0)
     headers = {"User-Agent": DOWNLOAD_USER_AGENT}
     probes = (
         (f"{clean_url}/queue", ("queue_running", "queue_pending", "running", "pending")),
@@ -3986,13 +3962,8 @@ def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
     return False
 
 
-def cloudflare_tunnel_assumed_ready(url: str, config: dict | None = None, active: bool = True, min_age_seconds: float = 4.0) -> bool:
-    """Cloudflare Quick Tunnel can serve UI/API while Python HTTPS probes fail on Windows.
-
-    Treat a detected trycloudflare URL as usable when the tunnel process is still alive,
-    it had a short warm-up window, and the local ComfyUI endpoint is healthy.
-    """
-    if not active or not is_cloudflare_tunnel_url(url):
+def localtunnel_assumed_ready(url: str, config: dict | None = None, active: bool = True, min_age_seconds: float = 2.0) -> bool:
+    if not active or not is_localtunnel_url(url):
         return False
     config = config or load_config()
     if main_tunnel_process_age() < min_age_seconds:
@@ -4030,6 +4001,8 @@ def wait_for_public_tunnel_url(
     first_detected_at = 0.0
     while time.time() < deadline:
         detected = detect_tunnel_url_from_logs(log_paths, subdomain)
+        if provider == TUNNEL_PROVIDER_LOCALTUNNEL and detected and not is_localtunnel_url(detected):
+            detected = ""
         if not detected and use_expected_fallback:
             detected = expected_tunnel_url(subdomain)
         if detected:
@@ -4039,16 +4012,16 @@ def wait_for_public_tunnel_url(
             if cached_public_tunnel_ready(detected, force=True):
                 return detected
             if (
-                provider == TUNNEL_PROVIDER_CLOUDFLARE
+                provider == TUNNEL_PROVIDER_LOCALTUNNEL
                 and first_detected_at
-                and time.time() - first_detected_at >= 4.0
-                and cloudflare_tunnel_assumed_ready(detected, config=config, active=True, min_age_seconds=4.0)
+                and time.time() - first_detected_at >= 2.0
+                and localtunnel_assumed_ready(detected, config=config, active=True, min_age_seconds=2.0)
             ):
                 return detected
         time.sleep(interval_seconds)
     if last_detected and cached_public_tunnel_ready(last_detected, force=True):
         return last_detected
-    if provider == TUNNEL_PROVIDER_CLOUDFLARE and last_detected and cloudflare_tunnel_assumed_ready(last_detected, config=config, active=True):
+    if provider == TUNNEL_PROVIDER_LOCALTUNNEL and last_detected and localtunnel_assumed_ready(last_detected, config=config, active=True):
         return last_detected
     return ""
 
@@ -4133,11 +4106,6 @@ def summarize_error_tail(path: Path) -> str:
     if not text:
         return ""
     lowered_text = text.lower()
-    if "cloudflared" in lowered_text:
-        if "is not recognized as an internal or external command" in lowered_text or "не является внутренней или внешней" in lowered_text:
-            return "Не удалось запустить cloudflared. Установи Cloudflare Tunnel или положи cloudflared.exe в tools."
-        if "failed" in lowered_text or "error" in lowered_text or "unable" in lowered_text:
-            return "Cloudflare Tunnel не смог подняться: " + tail_text(path, lines=1)
     if "npx.cmd" in lowered_text or "npx " in lowered_text:
         return "Не удалось запустить localtunnel через npx."
     def normalize_error_line(value: str) -> str:
@@ -4172,11 +4140,7 @@ def tunnel_not_ready_message(config: dict, url: str, tunnel_active: bool, url_re
     if not tunnel_active:
         return f"{tunnel_provider_title(provider)} еще не запущен."
     if not url:
-        if provider == TUNNEL_PROVIDER_CLOUDFLARE:
-            return "Cloudflare Tunnel запущен, но еще не выдал trycloudflare.com ссылку."
         return "LocalTunnel запущен, но еще не выдал loca.lt ссылку."
-    if provider == TUNNEL_PROVIDER_CLOUDFLARE:
-        return "Ссылка Cloudflare есть, но ComfyUI по ней не отвечает. Проверяем порт и публичный маршрут."
     return "Ссылка LocalTunnel есть, но ComfyUI по ней не отвечает. Часто это проблема loca.lt или локального порта."
 
 
@@ -4198,59 +4162,6 @@ def npx_launch_prefix() -> list[str]:
     return [str(npx_path)]
 
 
-def cloudflared_executable() -> str:
-    candidates = [resolve_tool_path(CLOUDFLARED_TOOL_NAME)]
-    for found in (shutil.which("cloudflared.exe"), shutil.which("cloudflared")):
-        if found:
-            candidates.append(Path(found))
-    candidates.extend(
-        [
-            Path("C:/Program Files (x86)/cloudflared/cloudflared.exe"),
-            Path("C:/Program Files/cloudflared/cloudflared.exe"),
-        ]
-    )
-    for candidate in candidates:
-        try:
-            if candidate and candidate.exists():
-                return str(candidate.resolve())
-        except Exception:
-            continue
-    return "cloudflared"
-
-
-def cloudflared_installed_path() -> Path | None:
-    exe = cloudflared_executable()
-    if exe == "cloudflared":
-        return None
-    path = Path(exe)
-    return path if path.exists() else None
-
-
-def ensure_cloudflared_available() -> Path:
-    existing = cloudflared_installed_path()
-    if existing:
-        return existing
-    tools_dir = get_base_dir() / "tools"
-    tools_dir.mkdir(parents=True, exist_ok=True)
-    destination = tools_dir / CLOUDFLARED_TOOL_NAME
-    temp_path = destination.with_suffix(".download")
-    try:
-        if temp_path.exists():
-            temp_path.unlink()
-        download_file(CLOUDFLARED_WINDOWS_AMD64_URL, temp_path)
-        if not temp_path.exists() or temp_path.stat().st_size < 1024 * 1024:
-            raise RuntimeError("Cloudflare Tunnel скачался некорректно.")
-        os.replace(temp_path, destination)
-    except Exception as exc:
-        try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except Exception:
-            pass
-        raise RuntimeError(f"Не удалось скачать cloudflared.exe: {exc}") from exc
-    return destination
-
-
 def wait_for_port(port: int, timeout_seconds: float = 90.0, interval_seconds: float = 0.6) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -4268,41 +4179,16 @@ def launch_localtunnel(comfy_root: Path, port: int, subdomain: str, out_path: Pa
         *npx_launch_prefix(),
         "--yes",
         "localtunnel",
+        "--host",
+        LOCALTUNNEL_HOST,
         "--port",
         str(int(port)),
         "--local-host",
         "127.0.0.1",
-        "--subdomain",
-        normalize_subdomain(subdomain),
     ]
-    try:
-        proc = subprocess.Popen(
-            command,
-            cwd=str(comfy_root),
-            stdout=out,
-            stderr=err,
-            shell=False,
-            **hidden_subprocess_kwargs(new_process_group=True),
-        )
-    finally:
-        out.close()
-        err.close()
-    return proc
-
-
-def launch_cloudflare_tunnel(comfy_root: Path, port: int, out_path: Path, err_path: Path) -> subprocess.Popen:
-    clear_logs(out_path, err_path)
-    out = open(out_path, "w", encoding="utf-8")
-    err = open(err_path, "w", encoding="utf-8")
-    command = [
-        cloudflared_executable(),
-        "tunnel",
-        "--url",
-        f"http://127.0.0.1:{int(port)}",
-        "--protocol",
-        "http2",
-        "--no-autoupdate",
-    ]
+    clean_subdomain = normalize_subdomain(subdomain)
+    if clean_subdomain:
+        command.extend(["--subdomain", clean_subdomain])
     try:
         proc = subprocess.Popen(
             command,
@@ -4319,19 +4205,16 @@ def launch_cloudflare_tunnel(comfy_root: Path, port: int, out_path: Path, err_pa
 
 
 def launch_tunnel(provider: str, comfy_root: Path, port: int, subdomain: str, out_path: Path, err_path: Path) -> subprocess.Popen:
-    provider = normalize_tunnel_provider(provider)
-    if provider == TUNNEL_PROVIDER_LOCALTUNNEL:
-        return launch_localtunnel(comfy_root, port, subdomain, out_path, err_path)
-    return launch_cloudflare_tunnel(comfy_root, port, out_path, err_path)
+    return launch_localtunnel(comfy_root, port, subdomain, out_path, err_path)
 
 
 def main_tunnel_detected_url(config: dict | None = None, active: bool = True) -> str:
     if not active:
         return ""
     config = config or load_config()
-    provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
-    preferred = config.get("subdomain", "") if provider == TUNNEL_PROVIDER_LOCALTUNNEL else ""
-    return detect_tunnel_url_from_logs((TUNNEL_OUT, TUNNEL_ERR), preferred)
+    preferred = config.get("subdomain", "")
+    detected = detect_tunnel_url_from_logs((TUNNEL_OUT, TUNNEL_ERR), preferred)
+    return detected if is_localtunnel_url(detected) else ""
 
 
 def main_tunnel_candidate_url(config: dict | None = None, state: dict | None = None, active: bool = True) -> str:
@@ -4451,7 +4334,7 @@ def start_tunnel_if_needed() -> str:
                 detected_url
                 and (
                     cached_public_tunnel_ready(detected_url, force=True)
-                    or cloudflare_tunnel_assumed_ready(detected_url, config=config, active=True)
+                    or localtunnel_assumed_ready(detected_url, config=config, active=True)
                 )
             )
             if detected_ready:
@@ -4467,8 +4350,6 @@ def start_tunnel_if_needed() -> str:
                 return "Туннель запускается."
 
         provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
-        if provider == TUNNEL_PROVIDER_CLOUDFLARE:
-            ensure_cloudflared_available()
         proc = launch_tunnel(provider, comfy_root, config["port"], config["subdomain"], TUNNEL_OUT, TUNNEL_ERR)
         state["tunnel_pid"] = proc.pid
         state["tunnel_started_at"] = time.time()
@@ -4477,9 +4358,9 @@ def start_tunnel_if_needed() -> str:
         reset_tunnel_retry()
         ready_url = wait_for_public_tunnel_url(
             (TUNNEL_OUT, TUNNEL_ERR),
-            config["subdomain"] if provider == TUNNEL_PROVIDER_LOCALTUNNEL else "",
-            timeout_seconds=35.0 if provider == TUNNEL_PROVIDER_CLOUDFLARE else 22.0,
-            use_expected_fallback=(provider == TUNNEL_PROVIDER_LOCALTUNNEL),
+            config["subdomain"],
+            timeout_seconds=45.0,
+            use_expected_fallback=bool(normalize_subdomain(config.get("subdomain", ""))),
             provider=provider,
             config=config,
         )
@@ -4489,36 +4370,6 @@ def start_tunnel_if_needed() -> str:
             state["last_tunnel_error"] = ""
             save_state(state)
             return "Туннель готов."
-        if provider == TUNNEL_PROVIDER_LOCALTUNNEL:
-            localtunnel_error = summarize_error_tail(TUNNEL_ERR) or "LocalTunnel did not publish a reachable URL."
-            try:
-                kill_process_tree(psutil.Process(proc.pid))
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-            cached_process_scan("tunnel", force=True)
-            config["tunnel_provider"] = TUNNEL_PROVIDER_CLOUDFLARE
-            save_config(config)
-            ensure_cloudflared_available()
-            proc = launch_cloudflare_tunnel(comfy_root, config["port"], TUNNEL_OUT, TUNNEL_ERR)
-            state = load_state()
-            state["tunnel_pid"] = proc.pid
-            state["tunnel_started_at"] = time.time()
-            state["last_tunnel_error"] = localtunnel_error
-            save_state(state)
-            ready_url = wait_for_public_tunnel_url(
-                (TUNNEL_OUT, TUNNEL_ERR),
-                "",
-                timeout_seconds=35.0,
-                use_expected_fallback=False,
-                provider=TUNNEL_PROVIDER_CLOUDFLARE,
-                config=config,
-            )
-            if ready_url:
-                state = load_state()
-                state["last_url"] = ready_url
-                state["last_tunnel_error"] = ""
-                save_state(state)
-                return "LocalTunnel did not respond; Cloudflare Tunnel is ready."
         if not pid_is_running(proc.pid):
             error_text = summarize_error_tail(TUNNEL_ERR) or "Туннель не успел подняться."
             schedule_tunnel_retry(error_text)
@@ -4880,8 +4731,8 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         and (
             cached_public_tunnel_ready(candidate_main_url)
             or (
-                tunnel_provider == TUNNEL_PROVIDER_CLOUDFLARE
-                and cloudflare_tunnel_assumed_ready(candidate_main_url, config=config, active=tunnel_active)
+                tunnel_provider == TUNNEL_PROVIDER_LOCALTUNNEL
+                and localtunnel_assumed_ready(candidate_main_url, config=config, active=tunnel_active)
             )
         )
     )
@@ -7643,13 +7494,11 @@ class MainWindow(QWidget):
         onboarding_tunnel_layout.setSpacing(14)
         self.onboarding_tunnel_title = QLabel("Выбери туннель")
         self.onboarding_tunnel_title.setObjectName("launchChoiceTitle")
-        self.onboarding_tunnel_hint = QLabel("Cloudflare дает случайную ссылку trycloudflare.com. LocalTunnel позволяет задать свой subdomain на loca.lt.")
+        self.onboarding_tunnel_hint = QLabel("LocalTunnel starts through lt. Leave subdomain empty for a random loca.lt link.")
         self.onboarding_tunnel_hint.setObjectName("launchChoiceSubtitle")
         self.onboarding_tunnel_hint.setWordWrap(True)
-        self.onboarding_cloudflare_button = QPushButton("Cloudflare")
         self.onboarding_localtunnel_button = QPushButton("LocalTunnel")
         self.onboarding_tunnel_buttons = {
-            TUNNEL_PROVIDER_CLOUDFLARE: self.onboarding_cloudflare_button,
             TUNNEL_PROVIDER_LOCALTUNNEL: self.onboarding_localtunnel_button,
         }
         self.onboarding_tunnel_group = QButtonGroup(self)
@@ -7663,7 +7512,6 @@ class MainWindow(QWidget):
             self.onboarding_tunnel_group.addButton(button)
         tunnel_buttons_layout = QHBoxLayout()
         tunnel_buttons_layout.setSpacing(12)
-        tunnel_buttons_layout.addWidget(self.onboarding_cloudflare_button, 1)
         tunnel_buttons_layout.addWidget(self.onboarding_localtunnel_button, 1)
         self.onboarding_tunnel_description = QLabel("")
         self.onboarding_tunnel_description.setObjectName("launchChoiceStepHint")
@@ -7687,13 +7535,13 @@ class MainWindow(QWidget):
         onboarding_subdomain_layout.setSpacing(14)
         self.onboarding_subdomain_title = QLabel("Придумай свою ссылку для Comfy")
         self.onboarding_subdomain_title.setObjectName("launchChoiceTitle")
-        self.onboarding_subdomain_hint = QLabel("Минимум 6 символов. Разрешены только буквы, цифры и дефис.")
+        self.onboarding_subdomain_hint = QLabel("Optional. Leave empty for a random loca.lt link, or enter a custom subdomain.")
         self.onboarding_subdomain_hint.setObjectName("launchChoiceSubtitle")
         self.onboarding_subdomain_hint.setWordWrap(True)
         self.onboarding_subdomain_input = QLineEdit()
         self.onboarding_subdomain_input.setObjectName("launchChoiceInput")
         self.onboarding_subdomain_input.setMinimumHeight(54)
-        self.onboarding_subdomain_input.setPlaceholderText("comfylocal1234")
+        self.onboarding_subdomain_input.setPlaceholderText("empty = random")
         self.onboarding_subdomain_input.textEdited.connect(self.on_onboarding_subdomain_changed)
         self.onboarding_subdomain_error = QLabel("Субдомен еще не подходит.")
         self.onboarding_subdomain_error.setObjectName("launchChoiceError")
@@ -7794,10 +7642,8 @@ class MainWindow(QWidget):
         tunnel_provider_layout = QHBoxLayout(self.tunnel_provider_segment)
         tunnel_provider_layout.setContentsMargins(4, 4, 4, 4)
         tunnel_provider_layout.setSpacing(6)
-        self.cloudflare_button = QPushButton("Cloudflare")
         self.localtunnel_button = QPushButton("LocalTunnel")
         self.tunnel_provider_buttons = {
-            TUNNEL_PROVIDER_CLOUDFLARE: self.cloudflare_button,
             TUNNEL_PROVIDER_LOCALTUNNEL: self.localtunnel_button,
         }
         self.tunnel_provider_group = QButtonGroup(self)
@@ -7819,11 +7665,11 @@ class MainWindow(QWidget):
         self.subdomain_label.setObjectName("drawerLabel")
         self.subdomain_input = QLineEdit()
         self.subdomain_input.setObjectName("drawerInput")
-        self.subdomain_input.setPlaceholderText("comfylocal1234")
+        self.subdomain_input.setPlaceholderText("empty = random")
         self.subdomain_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.subdomain_input.setMinimumHeight(44)
         self.subdomain_input.textEdited.connect(self.mark_settings_dirty)
-        self.subdomain_hint = QLabel("Используется только в LocalTunnel. В Cloudflare ссылка всегда случайная.")
+        self.subdomain_hint = QLabel("Optional. Empty starts lt without --subdomain, so LocalTunnel returns a random loca.lt link.")
         self.subdomain_hint.setObjectName("drawerHint")
         self.subdomain_hint.setWordWrap(True)
 
@@ -7926,9 +7772,6 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.comfy_root_label)
         drawer_layout.addWidget(self.comfy_root_input)
         drawer_layout.addWidget(self.comfy_root_pick_button)
-        drawer_layout.addWidget(self.tunnel_provider_label)
-        drawer_layout.addWidget(self.tunnel_provider_segment)
-        drawer_layout.addWidget(self.tunnel_provider_hint)
         drawer_layout.addWidget(self.subdomain_label)
         drawer_layout.addWidget(self.subdomain_input)
         drawer_layout.addWidget(self.subdomain_hint)
@@ -8830,14 +8673,9 @@ class MainWindow(QWidget):
                     if button.isChecked() != should_check:
                         button.setChecked(should_check)
                 self.tunnel_provider_hint.setText(tunnel_provider_description(active_provider))
-                localtunnel_selected = active_provider == TUNNEL_PROVIDER_LOCALTUNNEL
-                self.subdomain_input.setEnabled(localtunnel_selected)
-                self.subdomain_label.setText("LocalTunnel subdomain" if localtunnel_selected else "LocalTunnel subdomain")
-                self.subdomain_hint.setText(
-                    "Можно задать свою ссылку вида https://name.loca.lt."
-                    if localtunnel_selected
-                    else "Cloudflare Quick Tunnel выдаёт случайную trycloudflare.com ссылку, это поле не используется."
-                )
+                self.subdomain_input.setEnabled(True)
+                self.subdomain_label.setText("LocalTunnel subdomain")
+                self.subdomain_hint.setText("Optional. Empty starts lt without --subdomain, so LocalTunnel returns a random loca.lt link.")
 
                 extra_args_text = normalize_extra_launch_args(self.config.get("extra_launch_args", ""))
                 if not self.extra_launch_args_input.hasFocus() and self.extra_launch_args_input.text() != extra_args_text:
@@ -9355,28 +9193,16 @@ class MainWindow(QWidget):
         self.onboarding_tunnel_description.setText(tunnel_provider_description(selected_provider))
 
     def refresh_onboarding_subdomain_state(self) -> None:
-        provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
-        if provider == TUNNEL_PROVIDER_CLOUDFLARE:
-            self.onboarding_subdomain_input.setEnabled(False)
-            self.onboarding_subdomain_input.setStyleSheet(
-                f"background: {self.theme.panel_alt}; border: 2px solid {self.theme.border}; border-radius: 18px; padding: 12px 14px; font-size: 15px; font-weight: 700; color: {self.theme.muted}; selection-background-color: {self.theme.blue};"
-            )
-            self.onboarding_subdomain_error.setText("Cloudflare выдаст случайную ссылку trycloudflare.com после запуска.")
-            self.onboarding_subdomain_error.setStyleSheet(f"color: {self.theme.green}; font-size: 12px; font-weight: 700;")
-            self.onboarding_subdomain_continue.setEnabled(True)
-            self.onboarding_subdomain_continue.setStyleSheet(
-                f"background: {self.theme.blue}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
-            )
-            return
         self.onboarding_subdomain_input.setEnabled(True)
         current = sanitize_subdomain(self.onboarding_subdomain_input.text())
-        valid = is_valid_main_subdomain(current)
+        empty = not current
+        valid = empty or is_valid_main_subdomain(current)
         border = "#16a34a" if valid else self.theme.red
         self.onboarding_subdomain_input.setStyleSheet(
             f"background: {self.theme.panel_alt}; border: 2px solid {border}; border-radius: 18px; padding: 12px 14px; font-size: 15px; font-weight: 700; color: {self.theme.text}; selection-background-color: {self.theme.blue};"
         )
         if valid:
-            self.onboarding_subdomain_error.setText(f"Будет ссылка: https://{current}.loca.lt")
+            self.onboarding_subdomain_error.setText("Empty: lt will return a random loca.lt link." if empty else f"URL: https://{current}.loca.lt")
             self.onboarding_subdomain_error.setStyleSheet(f"color: {self.theme.green}; font-size: 12px; font-weight: 700;")
             self.onboarding_subdomain_continue.setEnabled(True)
             self.onboarding_subdomain_continue.setStyleSheet(
@@ -9491,34 +9317,31 @@ class MainWindow(QWidget):
     def advance_onboarding_from_mode(self) -> None:
         self.config["launch_mode"] = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
         self.config["launch_mode_confirmed"] = True
+        self.config["tunnel_provider"] = TUNNEL_PROVIDER_LOCALTUNNEL
         save_config(self.config)
         self.load_controls_from_config(force=True)
-        self.set_onboarding_step("tunnel")
+        current_value = sanitize_subdomain(self.config.get("subdomain", ""))
+        self.onboarding_subdomain_input.setText(current_value)
+        self.set_onboarding_step("subdomain")
 
     def set_onboarding_tunnel_provider(self, provider: str) -> None:
-        self.config["tunnel_provider"] = normalize_tunnel_provider(provider)
+        self.config["tunnel_provider"] = TUNNEL_PROVIDER_LOCALTUNNEL
         self.update_onboarding_tunnel_buttons()
 
     def advance_onboarding_from_tunnel_provider(self) -> None:
-        self.config["tunnel_provider"] = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        self.config["tunnel_provider"] = TUNNEL_PROVIDER_LOCALTUNNEL
         save_config(self.config)
         self.load_controls_from_config(force=True)
-        if self.config["tunnel_provider"] == TUNNEL_PROVIDER_CLOUDFLARE:
-            self.set_onboarding_step("guide")
-            return
         current_value = sanitize_subdomain(self.config.get("subdomain", ""))
-        self.onboarding_subdomain_input.setText(current_value if len(current_value) >= ONBOARDING_MIN_SUBDOMAIN_LEN else "")
+        self.onboarding_subdomain_input.setText(current_value)
         self.set_onboarding_step("subdomain")
 
     def on_onboarding_subdomain_changed(self) -> None:
         self.refresh_onboarding_subdomain_state()
 
     def advance_onboarding_from_subdomain(self) -> None:
-        if normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER)) == TUNNEL_PROVIDER_CLOUDFLARE:
-            self.set_onboarding_step("guide")
-            return
         value = sanitize_subdomain(self.onboarding_subdomain_input.text())
-        if not is_valid_main_subdomain(value):
+        if value and not is_valid_main_subdomain(value):
             self.refresh_onboarding_subdomain_state()
             return
         self.config["subdomain"] = value
@@ -9802,7 +9625,7 @@ class MainWindow(QWidget):
         self.mark_settings_dirty()
 
     def set_tunnel_provider(self, provider: str) -> None:
-        provider = normalize_tunnel_provider(provider)
+        provider = TUNNEL_PROVIDER_LOCALTUNNEL
         button = self.tunnel_provider_buttons.get(provider)
         if button and not button.isChecked():
             button.setChecked(True)
@@ -9812,12 +9635,8 @@ class MainWindow(QWidget):
             return
         self.config["tunnel_provider"] = provider
         self.tunnel_provider_hint.setText(tunnel_provider_description(provider))
-        self.subdomain_input.setEnabled(provider == TUNNEL_PROVIDER_LOCALTUNNEL)
-        self.subdomain_hint.setText(
-            "Можно задать свою ссылку вида https://name.loca.lt."
-            if provider == TUNNEL_PROVIDER_LOCALTUNNEL
-            else "Cloudflare Quick Tunnel выдаёт случайную trycloudflare.com ссылку, это поле не используется."
-        )
+        self.subdomain_input.setEnabled(True)
+        self.subdomain_hint.setText("Optional. Empty starts lt without --subdomain, so LocalTunnel returns a random loca.lt link.")
         self.update_segment_buttons()
         self.mark_settings_dirty()
 
