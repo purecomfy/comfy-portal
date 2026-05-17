@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -68,7 +68,8 @@ COMFY_GITHUB_REPO_URL = "https://github.com/comfyanonymous/ComfyUI"
 COMFY_GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/comfyanonymous/ComfyUI/releases/latest"
 DEFAULT_WIDTH = 1220
 DEFAULT_HEIGHT = 780
-DRAWER_WIDTH = 340
+DRAWER_WIDTH = 390
+DRAWER_CONTROL_WIDTH = 336
 FRIENDS_DRAWER_WIDTH = 438
 POLL_MS = 6200
 PROCESS_SCAN_TTL = 45.0
@@ -83,6 +84,7 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_PROGRESS_INTERVAL = 1.0
 DEFAULT_TUNNEL_RETRY_DELAY = 5.0
 MAX_TUNNEL_RETRY_DELAY = 45.0
+PREFER_COMFY_STABLE_UPDATER = False
 DEFAULT_TUNNEL_PROVIDER = "localtunnel"
 TUNNEL_PROVIDER_LOCALTUNNEL = "localtunnel"
 TUNNEL_PROVIDERS = (TUNNEL_PROVIDER_LOCALTUNNEL,)
@@ -126,8 +128,9 @@ BUNDLED_CIVITAI_KEYS_B64 = (
     "YmJiYjlmZmVjMmFjN2VlZjA3NWUxOTUxYzVjMzA0YWI=",
 )
 DEFAULT_LAUNCH_MODE = "fp16"
-DEFAULT_EXTRA_LAUNCH_ARGS = "--disable-dynamic-vram --log-stdout"
-REQUIRED_COMFY_ARGS = ("--log-stdout",)
+DEFAULT_EXTRA_LAUNCH_ARGS = ""
+REQUIRED_COMFY_ARGS: tuple[str, ...] = ()
+DISALLOWED_COMFY_ARGS = {"--log-stdout", "--disable-dynamic-vram"}
 MODEL_SIZE_HINTS = {
     "SAM": 420 * 1024 * 1024,
     "RealESRGAN x2": 70 * 1024 * 1024,
@@ -589,6 +592,7 @@ COMFY_OUT = DATA_DIR / "comfy.stdout.log"
 COMFY_ERR = DATA_DIR / "comfy.stderr.log"
 TUNNEL_OUT = DATA_DIR / "tunnel.stdout.log"
 TUNNEL_ERR = DATA_DIR / "tunnel.stderr.log"
+PORTAL_LOG = DATA_DIR / "portal.log"
 PROCESS_SCAN_CACHE = {
     "comfy": {"at": 0.0, "pids": []},
     "tunnel": {"at": 0.0, "pids": []},
@@ -889,7 +893,7 @@ def tunnel_provider_title(provider: object) -> str:
 
 
 def tunnel_provider_description(provider: object) -> str:
-    return "LocalTunnel only. Empty subdomain lets lt generate a random loca.lt link."
+    return "LocalTunnel starts through lt. Empty subdomain lets lt generate a random loca.lt link."
 
 
 def normalize_launch_mode(value: str) -> str:
@@ -919,7 +923,7 @@ def normalize_extra_launch_args(value: object) -> str:
     seen: set[str] = set()
     for arg in args:
         token = str(arg).strip()
-        if not token or token in seen:
+        if not token or token in DISALLOWED_COMFY_ARGS or token in seen:
             continue
         clean.append(token)
         seen.add(token)
@@ -2776,6 +2780,38 @@ def hidden_subprocess_kwargs(new_process_group: bool = False) -> dict:
     return kwargs
 
 
+def windows_oem_encoding() -> str:
+    if os.name == "nt":
+        try:
+            return f"cp{ctypes.windll.kernel32.GetOEMCP()}"
+        except Exception:
+            return "cp866"
+    return locale.getpreferredencoding(False) or "utf-8"
+
+
+def decode_process_output(value: bytes | str | None) -> str:
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    encodings = []
+    for encoding in ("utf-8-sig", windows_oem_encoding(), locale.getpreferredencoding(False), "cp866", "cp1251"):
+        if encoding and encoding not in encodings:
+            encodings.append(encoding)
+    best = ""
+    best_score = 10**9
+    for encoding in encodings:
+        try:
+            text = value.decode(encoding, errors="replace")
+        except Exception:
+            continue
+        score = text.count("\ufffd") * 1000 + text.count("Р") * 3 + text.count("С") * 2
+        if score < best_score:
+            best = text
+            best_score = score
+    return best or value.decode("utf-8", errors="replace")
+
+
 def set_windows_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> None:
     if os.name != "nt":
         return
@@ -2806,7 +2842,7 @@ def seven_zip_executable_candidates() -> list[str]:
 
 
 def compact_process_error(result: subprocess.CompletedProcess) -> str:
-    text = (result.stderr or result.stdout or "").strip()
+    text = (decode_process_output(result.stderr) or decode_process_output(result.stdout)).strip()
     text = re.sub(r"\s+", " ", text)
     return text[:600] if text else f"код выхода {result.returncode}"
 
@@ -2904,6 +2940,46 @@ def merge_comfy_update_tree(source_root: Path, target_root: Path, base_source: P
             shutil.copy2(item, destination)
 
 
+def comfy_stable_update_script(root: Path) -> Path | None:
+    candidates = [
+        root / "update" / "update_comfyui_stable.bat",
+        root.parent / "ComfyUI_windows_portable" / "update" / "update_comfyui_stable.bat",
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.exists():
+            return resolved
+    return None
+
+
+def run_comfy_stable_update_script(root: Path, progress=None) -> None:
+    script = comfy_stable_update_script(root)
+    if not script:
+        raise FileNotFoundError("update\\update_comfyui_stable.bat")
+    if progress:
+        progress(0.05, "Запускаем update_comfyui_stable.bat", build_setup_progress_meta("comfy", "prepare", 5, "Штатный updater portable-сборки"))
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "call", str(script), "nopause"],
+        cwd=str(script.parent),
+        capture_output=True,
+        text=False,
+        check=False,
+        **hidden_subprocess_kwargs(),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"update_comfyui_stable.bat завершился с ошибкой: {compact_process_error(result)}")
+    if progress:
+        progress(0.95, "Штатный updater ComfyUI завершен", build_setup_progress_meta("comfy", "copy", 95, "Проверяем portable-папку"))
+
+
 def install_comfyui_portable(install_parent: Path, progress=None, force_update: bool = False) -> Path:
     install_parent = install_parent.expanduser().resolve()
     install_parent.mkdir(parents=True, exist_ok=True)
@@ -2919,11 +2995,38 @@ def install_comfyui_portable(install_parent: Path, progress=None, force_update: 
     source = resolve_comfy_package_source()
     if existing_root and force_update:
         if progress:
-            progress(0.0, "Обновляем portable ComfyUI", build_setup_progress_meta("comfy", "prepare", 0, "Сохраняем models/custom_nodes/output"))
+            progress(0.0, "Обновляем portable ComfyUI", build_setup_progress_meta("comfy", "prepare", 0, "Ищем штатный updater"))
         try:
             stop_all()
         except Exception:
             pass
+        stable_update_script = comfy_stable_update_script(existing_root) if PREFER_COMFY_STABLE_UPDATER else None
+        stable_update_error = ""
+        if stable_update_script:
+            try:
+                run_comfy_stable_update_script(existing_root, progress=progress)
+                if not is_comfy_root(existing_root):
+                    raise RuntimeError("update_comfyui_stable.bat завершился, но portable-папка ComfyUI не прошла проверку.")
+                write_comfy_source_marker(existing_root, source)
+                config = load_config()
+                config["comfy_root"] = str(existing_root)
+                save_config(config)
+                if progress:
+                    progress(1.0, "ComfyUI обновлена", build_setup_progress_meta("comfy", "done", 100, "Обновление через update_comfyui_stable.bat готово"))
+                return existing_root
+            except Exception as exc:
+                stable_update_error = str(exc)
+                if progress:
+                    progress(
+                        0.08,
+                        "Штатный updater не сработал, используем архив",
+                        build_setup_progress_meta("comfy", "prepare", 8, stable_update_error[:180]),
+                    )
+        if progress:
+            fallback_meta = "Архивное обновление сохраняет models/custom_nodes/output/user/workflows"
+            if stable_update_error:
+                fallback_meta = "Fallback после ошибки штатного updater"
+            progress(0.0, "Обновляем portable ComfyUI", build_setup_progress_meta("comfy", "prepare", 0, fallback_meta))
         with tempfile.TemporaryDirectory(prefix="comfyportal_comfy_update_") as temp_dir:
             temp_parent = Path(temp_dir)
             if source["kind"] in {"local_installed", "local_folder"}:
@@ -3721,15 +3824,25 @@ def find_matching_processes(kind: str) -> list[psutil.Process]:
         elif kind == "tunnel":
             is_localtunnel = "localtunnel" in cmdline or (name.startswith("node") and "loca.lt" in cmdline)
             localtunnel_main_port = is_localtunnel and f"--port {main_port}" in cmdline
+            is_removed_tunnel = process_looks_like_removed_portal_tunnel(name, cmdline, main_port)
             if is_localtunnel and main_subdomain and tunnel_subdomain == main_subdomain:
                 matches.append(proc)
             elif is_localtunnel and not main_subdomain and localtunnel_main_port:
+                matches.append(proc)
+            elif is_removed_tunnel:
                 matches.append(proc)
         elif kind == "friend_tunnel":
             is_localtunnel = "localtunnel" in cmdline or (name.startswith("node") and "loca.lt" in cmdline)
             if is_localtunnel and tunnel_subdomain and (tunnel_subdomain in friend_subdomains or FRIEND_LINK_PATTERN.fullmatch(tunnel_subdomain)):
                 matches.append(proc)
     return matches
+
+
+def process_looks_like_removed_portal_tunnel(name: str, cmdline: str, port: int) -> bool:
+    if str(port) not in cmdline:
+        return False
+    removed_names = ("tmole", "tunnelmole", "ngrok", "cloudflared", "cloudflare", "bore", "frpc", "frp")
+    return any(item in name or item in cmdline for item in removed_names)
 
 
 def pid_is_running(pid: int | None) -> bool:
@@ -3748,6 +3861,8 @@ def cached_process_scan(kind: str, force: bool = False) -> list[int]:
     if force or now - cache["at"] > PROCESS_SCAN_TTL:
         cache["pids"] = [proc.pid for proc in find_matching_processes(kind)]
         cache["at"] = now
+    else:
+        cache["pids"] = [pid for pid in cache["pids"] if pid_is_running(pid)]
     return cache["pids"]
 
 
@@ -3869,6 +3984,12 @@ def cached_friend_process_map(force: bool = False) -> dict[str, psutil.Process]:
 def read_text_tail(path: Path, max_bytes: int = 16384) -> str:
     if not path.exists():
         return ""
+
+    def clean_console_text(value: str) -> str:
+        value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+        value = re.sub(r"\x1b\][^\a]*(?:\a|\x1b\\)", "", value)
+        return value.replace("\r", "")
+
     try:
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
@@ -3883,10 +4004,10 @@ def read_text_tail(path: Path, max_bytes: int = 16384) -> str:
                 continue
             seen.add(encoding)
             try:
-                return data.decode(encoding)
+                return clean_console_text(data.decode(encoding))
             except Exception:
                 continue
-        return data.decode("utf-8", errors="replace")
+        return clean_console_text(data.decode("utf-8", errors="replace"))
     except Exception:
         encodings = ["utf-8", locale.getpreferredencoding(False), "cp866", "cp1251"]
         seen: set[str] = set()
@@ -3896,11 +4017,11 @@ def read_text_tail(path: Path, max_bytes: int = 16384) -> str:
                 continue
             seen.add(encoding)
             try:
-                return path.read_text(encoding=encoding)
+                return clean_console_text(path.read_text(encoding=encoding))
             except Exception:
                 continue
         try:
-            return path.read_text(encoding="utf-8", errors="replace")
+            return clean_console_text(path.read_text(encoding="utf-8", errors="replace"))
         except Exception:
             return ""
 
@@ -3909,16 +4030,18 @@ def detect_tunnel_url(path: Path, preferred_subdomain: str = "") -> str:
     if not path.exists():
         return ""
     content = read_text_tail(path, max_bytes=16384)
-    matches = re.findall(r"https://[a-z0-9-]+\.loca\.lt", content, flags=re.IGNORECASE)
+    matches: list[str] = []
+    for match in re.finditer(r"https://[a-z0-9-]+\.loca\.lt", content, flags=re.IGNORECASE):
+        url = match.group(0).rstrip("/")
+        matches.append(url)
     if not matches:
         return ""
-    matches = [url.rstrip("/") for url in matches]
     preferred = sanitize_subdomain(preferred_subdomain)
     if preferred:
         for url in reversed(matches):
             if extract_public_subdomain(url) == preferred:
                 return url
-        return matches[-1]
+        return ""
     return matches[-1]
 
 
@@ -3930,8 +4053,15 @@ def detect_tunnel_url_from_logs(paths: list[Path] | tuple[Path, ...], preferred_
     return ""
 
 
+def detect_any_tunnel_url_from_logs(paths: list[Path] | tuple[Path, ...]) -> str:
+    return detect_tunnel_url_from_logs(paths, "")
+
+
 def expected_tunnel_url(subdomain: str) -> str:
-    return friend_url_for_subdomain(normalize_subdomain(subdomain))
+    clean = normalize_subdomain(subdomain)
+    if not clean:
+        return ""
+    return friend_url_for_subdomain(clean)
 
 
 def expected_main_tunnel_url(config: dict | None = None) -> str:
@@ -3939,11 +4069,13 @@ def expected_main_tunnel_url(config: dict | None = None) -> str:
     return expected_tunnel_url(str(config.get("subdomain", "")))
 
 
-def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
+def public_comfy_http_ready(url: str, timeout_seconds: float = 1.2) -> bool:
     clean_url = str(url or "").strip().rstrip("/")
     if not clean_url:
         return False
-    headers = {"User-Agent": DOWNLOAD_USER_AGENT}
+    headers = {"User-Agent": DOWNLOAD_USER_AGENT, "bypass-tunnel-reminder": "true"}
+    if is_localtunnel_url(clean_url):
+        timeout_seconds = max(timeout_seconds, 5.0)
     probes = (
         (f"{clean_url}/queue", ("queue_running", "queue_pending", "running", "pending")),
         (clean_url, ("comfyui", "comfyui_frontend_package")),
@@ -3960,6 +4092,13 @@ def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
         except Exception:
             continue
     return False
+
+
+def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2) -> bool:
+    clean_url = str(url or "").strip().rstrip("/")
+    if not clean_url:
+        return False
+    return public_comfy_http_ready(clean_url, timeout_seconds=timeout_seconds)
 
 
 def localtunnel_assumed_ready(url: str, config: dict | None = None, active: bool = True, min_age_seconds: float = 2.0) -> bool:
@@ -3997,31 +4136,25 @@ def wait_for_public_tunnel_url(
     log_paths = tuple(log_path) if isinstance(log_path, (tuple, list)) else (log_path,)
     deadline = time.time() + timeout_seconds
     last_detected = ""
-    provider = normalize_tunnel_provider(provider)
-    first_detected_at = 0.0
+    requested_subdomain = normalize_subdomain(subdomain)
+    normalize_tunnel_provider(provider)
     while time.time() < deadline:
         detected = detect_tunnel_url_from_logs(log_paths, subdomain)
-        if provider == TUNNEL_PROVIDER_LOCALTUNNEL and detected and not is_localtunnel_url(detected):
+        if detected and not is_localtunnel_url(detected):
             detected = ""
+        if requested_subdomain and not detected:
+            actual_url = detect_any_tunnel_url_from_logs(log_paths)
+            actual_subdomain = extract_public_subdomain(actual_url)
+            if actual_subdomain and actual_subdomain != requested_subdomain:
+                return ""
         if not detected and use_expected_fallback:
             detected = expected_tunnel_url(subdomain)
         if detected:
-            if detected != last_detected:
-                first_detected_at = time.time()
             last_detected = detected
             if cached_public_tunnel_ready(detected, force=True):
                 return detected
-            if (
-                provider == TUNNEL_PROVIDER_LOCALTUNNEL
-                and first_detected_at
-                and time.time() - first_detected_at >= 2.0
-                and localtunnel_assumed_ready(detected, config=config, active=True, min_age_seconds=2.0)
-            ):
-                return detected
         time.sleep(interval_seconds)
     if last_detected and cached_public_tunnel_ready(last_detected, force=True):
-        return last_detected
-    if provider == TUNNEL_PROVIDER_LOCALTUNNEL and last_detected and localtunnel_assumed_ready(last_detected, config=config, active=True):
         return last_detected
     return ""
 
@@ -4101,8 +4234,23 @@ def combined_comfy_log_text(max_bytes: int = 65536, root: Path | None = None) ->
     return ""
 
 
+def comfy_registry_fetch_in_progress(root: Path | None = None) -> bool:
+    text = combined_comfy_log_text(max_bytes=32768, root=root)
+    marker = re.compile(r"FETCH\s+ComfyRegistry\s+Data", re.IGNORECASE)
+    matches = list(marker.finditer(text))
+    if not matches:
+        return False
+    tail = text[matches[-1].start():]
+    if re.search(r"(done|complete|completed|finished|success|100%)", tail, re.IGNORECASE):
+        return False
+    following_lines = [line.strip() for line in tail.splitlines()[1:] if line.strip()]
+    if len(following_lines) > 12:
+        return False
+    return True
+
+
 def summarize_error_tail(path: Path) -> str:
-    text = tail_text(path, lines=12)
+    text = tail_text(path, lines=80)
     if not text:
         return ""
     lowered_text = text.lower()
@@ -4118,8 +4266,10 @@ def summarize_error_tail(path: Path) -> str:
         return ""
     for line in reversed(lines):
         lower = line.lower()
+        if "connection exited" in lower:
+            return "Туннель отключился. Перезапускаем туннель."
         if "is not recognized as an internal or external command" in lower or "не является внутренней или внешней" in lower:
-            return "Не удалось запустить localtunnel через npx."
+            return "Не удалось запустить туннель. Проверь Node.js/npm."
         if "error:" in lower or "refused" in lower or "firewall" in lower or "failed" in lower:
             return line
     return lines[-1]
@@ -4231,6 +4381,24 @@ def main_tunnel_candidate_url(config: dict | None = None, state: dict | None = N
     return str(state.get("last_url", "") or "").strip()
 
 
+def main_tunnel_subdomain_mismatch(config: dict | None = None, active: bool = True) -> tuple[str, str]:
+    if not active:
+        return "", ""
+    config = config or load_config()
+    requested = normalize_subdomain(config.get("subdomain", ""))
+    if not requested:
+        return "", ""
+    actual_url = detect_any_tunnel_url_from_logs((TUNNEL_OUT, TUNNEL_ERR))
+    actual = extract_public_subdomain(actual_url)
+    if actual and actual != requested:
+        return requested, actual_url
+    return "", ""
+
+
+def localtunnel_subdomain_mismatch_message(requested: str, actual_url: str) -> str:
+    return f"LocalTunnel вернул {actual_url}, хотя запрошен https://{requested}.loca.lt."
+
+
 def find_friend_link_entry(state: dict, link_id: str) -> dict | None:
     for entry in state.get("friend_links", []):
         if entry.get("id") == link_id:
@@ -4328,14 +4496,20 @@ def start_tunnel_if_needed() -> str:
         state = load_state()
         if not wait_for_comfy_ready(config["port"], timeout_seconds=30.0, interval_seconds=0.5):
             raise RuntimeError("ComfyUI еще не отвечает по HTTP и не готов для туннеля.")
+        provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        if not load_state().get("desired_running", False):
+            raise RuntimeError("Launch stopped.")
         if any_tunnel_process(state):
+            mismatch_subdomain, mismatch_url = main_tunnel_subdomain_mismatch(config, active=True)
+            if mismatch_subdomain:
+                stop_main_tunnel_only()
+                error_text = localtunnel_subdomain_mismatch_message(mismatch_subdomain, mismatch_url)
+                schedule_tunnel_retry(error_text)
+                raise RuntimeError(error_text)
             detected_url = main_tunnel_candidate_url(config, state, active=True)
             detected_ready = bool(
                 detected_url
-                and (
-                    cached_public_tunnel_ready(detected_url, force=True)
-                    or localtunnel_assumed_ready(detected_url, config=config, active=True)
-                )
+                and cached_public_tunnel_ready(detected_url, force=True)
             )
             if detected_ready:
                 if state.get("last_url") != detected_url:
@@ -4343,13 +4517,17 @@ def start_tunnel_if_needed() -> str:
                     state["last_tunnel_error"] = ""
                     save_state(state)
                 return "Туннель уже активен."
+            if detected_url and localtunnel_assumed_ready(detected_url, config=config, active=True):
+                if state.get("last_url") != detected_url:
+                    state["last_url"] = detected_url
+                    save_state(state)
+                return "Туннель запущен, проверяем публичную ссылку."
             if main_tunnel_process_age(state) >= TUNNEL_READY_GRACE_SECONDS:
                 stop_main_tunnel_only()
                 state = load_state()
             else:
                 return "Туннель запускается."
 
-        provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
         proc = launch_tunnel(provider, comfy_root, config["port"], config["subdomain"], TUNNEL_OUT, TUNNEL_ERR)
         state["tunnel_pid"] = proc.pid
         state["tunnel_started_at"] = time.time()
@@ -4370,6 +4548,12 @@ def start_tunnel_if_needed() -> str:
             state["last_tunnel_error"] = ""
             save_state(state)
             return "Туннель готов."
+        mismatch_subdomain, mismatch_url = main_tunnel_subdomain_mismatch(config, active=True)
+        if mismatch_subdomain:
+            stop_main_tunnel_only()
+            error_text = localtunnel_subdomain_mismatch_message(mismatch_subdomain, mismatch_url)
+            schedule_tunnel_retry(error_text)
+            raise RuntimeError(error_text)
         if not pid_is_running(proc.pid):
             error_text = summarize_error_tail(TUNNEL_ERR) or "Туннель не успел подняться."
             schedule_tunnel_retry(error_text)
@@ -4561,6 +4745,8 @@ def start_all() -> str:
     comfy_msg = start_comfy_if_needed()
     if not wait_for_comfy_ready(config["port"]):
         raise RuntimeError("ComfyUI не ответил вовремя.")
+    if not load_state().get("desired_running", False):
+        raise RuntimeError("Launch stopped.")
     tunnel_msg = start_tunnel_if_needed()
     return f"{comfy_msg} {tunnel_msg}"
 
@@ -4694,7 +4880,7 @@ def repair_launch() -> str:
     stop_all()
     clear_logs(COMFY_OUT, COMFY_ERR, TUNNEL_OUT, TUNNEL_ERR)
     reset_tunnel_retry()
-    return start_all()
+    return "Launcher repaired: ComfyUI и туннели остановлены."
 
 
 def reset_portal_config() -> str:
@@ -4722,29 +4908,27 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
     comfy_active = any_comfy_process(state)
     if not comfy_active and port_is_open(config["port"]):
         comfy_active = comfy_http_ready(config["port"])
+    registry_fetching = comfy_registry_fetch_in_progress(comfy_root_path)
     tunnel_active = any_tunnel_process(state)
     main_subdomain = normalize_subdomain(config.get("subdomain", ""))
     tunnel_provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
     candidate_main_url = main_tunnel_candidate_url(config, state, active=tunnel_active)
+    mismatch_subdomain, mismatch_url = main_tunnel_subdomain_mismatch(config, active=tunnel_active)
     main_url_ready = bool(
         candidate_main_url
-        and (
-            cached_public_tunnel_ready(candidate_main_url)
-            or (
-                tunnel_provider == TUNNEL_PROVIDER_LOCALTUNNEL
-                and localtunnel_assumed_ready(candidate_main_url, config=config, active=tunnel_active)
-            )
-        )
+        and cached_public_tunnel_ready(candidate_main_url)
+        and not registry_fetching
+        and not mismatch_subdomain
     )
-    url = candidate_main_url if tunnel_active and candidate_main_url else ""
     tunnel_age = main_tunnel_process_age(state) if tunnel_active else 0.0
     tunnel_needs_restart = bool(
         tunnel_active
         and bool(state.get("desired_running"))
         and internet_ok
-        and (not candidate_main_url or not main_url_ready)
+        and not main_url_ready
         and tunnel_age >= TUNNEL_READY_GRACE_SECONDS
     )
+    url = candidate_main_url if tunnel_active and candidate_main_url and not registry_fetching and not mismatch_subdomain and (main_url_ready or not tunnel_needs_restart) else ""
     if tunnel_active and main_url_ready:
         reset_tunnel_retry()
     if url and tunnel_active and main_url_ready:
@@ -4753,6 +4937,11 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
             save_state(state)
     elif not tunnel_active:
         url = ""
+        if state.get("last_url") or state.get("tunnel_pid") or state.get("tunnel_started_at"):
+            state["last_url"] = ""
+            state["tunnel_pid"] = None
+            state["tunnel_started_at"] = 0.0
+            save_state(state)
     if not comfy_active:
         comfy_active = port_is_open(config["port"])
     retry_after = float(state.get("tunnel_retry_after", 0.0) or 0.0)
@@ -4760,11 +4949,13 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
     tunnel_error = state.get("last_tunnel_error", "")
     if not tunnel_error and not tunnel_active:
         tunnel_error = summarize_error_tail(TUNNEL_ERR)
+    if mismatch_subdomain:
+        tunnel_error = localtunnel_subdomain_mismatch_message(mismatch_subdomain, mismatch_url)
     if tunnel_active and candidate_main_url and not main_url_ready:
         tunnel_error = tunnel_error or (
             "Туннель завис без живой ссылки. Перезапускаем туннель."
             if tunnel_needs_restart
-            else "Ссылка прогревается. Ждем, пока Comfy начнет отвечать через туннель."
+            else f"Ссылка {tunnel_provider_title(tunnel_provider)} есть, но публично пока не отвечает."
         )
 
     if tunnel_active and not main_url_ready:
@@ -4890,6 +5081,7 @@ def runtime_snapshot(include_logs: bool = False) -> dict:
         "comfy_root": comfy_root,
         "internet_ok": internet_ok,
         "comfy_active": comfy_active,
+        "comfy_registry_fetching": registry_fetching,
         "tunnel_active": tunnel_active,
         "url_ready": main_url_ready,
         "tunnel_needs_restart": tunnel_needs_restart,
@@ -5180,6 +5372,8 @@ class ToggleRow(CardFrame):
         self.title_label.setObjectName("drawerLabel")
         self.title_label.setToolTip(hint)
         self.title_label.setMinimumHeight(24)
+        self.title_label.setMinimumWidth(0)
+        self.title_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
         self.toggle = ToggleSwitch()
         self.toggle.setToolTip(hint)
@@ -6882,6 +7076,7 @@ class MainWindow(QWidget):
         self.friends_open = False
         self.friend_rows: dict[str, FriendLinkRow] = {}
         self.latest_snap: dict | None = None
+        self.stop_inflight = False
         self.auto_restart_inflight = False
         self.comfy_restore_inflight = False
         self.friend_restore_inflight: set[str] = set()
@@ -6892,6 +7087,7 @@ class MainWindow(QWidget):
         self.friends_visual_state = ""
         self.install_visual_state = ""
         self.settings_dirty = False
+        self.settings_autosave_pending = False
         self.syncing_controls = False
         self.overlay_animation_count = 0
         self.install_setup_inflight = False
@@ -7494,7 +7690,7 @@ class MainWindow(QWidget):
         onboarding_tunnel_layout.setSpacing(14)
         self.onboarding_tunnel_title = QLabel("Выбери туннель")
         self.onboarding_tunnel_title.setObjectName("launchChoiceTitle")
-        self.onboarding_tunnel_hint = QLabel("LocalTunnel starts through lt. Leave subdomain empty for a random loca.lt link.")
+        self.onboarding_tunnel_hint = QLabel("LocalTunnel opens the public loca.lt link.")
         self.onboarding_tunnel_hint.setObjectName("launchChoiceSubtitle")
         self.onboarding_tunnel_hint.setWordWrap(True)
         self.onboarding_localtunnel_button = QPushButton("LocalTunnel")
@@ -7535,7 +7731,7 @@ class MainWindow(QWidget):
         onboarding_subdomain_layout.setSpacing(14)
         self.onboarding_subdomain_title = QLabel("Придумай свою ссылку для Comfy")
         self.onboarding_subdomain_title.setObjectName("launchChoiceTitle")
-        self.onboarding_subdomain_hint = QLabel("Optional. Leave empty for a random loca.lt link, or enter a custom subdomain.")
+        self.onboarding_subdomain_hint = QLabel("Optional. Empty starts lt without --subdomain, so LocalTunnel returns a random loca.lt link.")
         self.onboarding_subdomain_hint.setObjectName("launchChoiceSubtitle")
         self.onboarding_subdomain_hint.setWordWrap(True)
         self.onboarding_subdomain_input = QLineEdit()
@@ -7605,7 +7801,7 @@ class MainWindow(QWidget):
         self.drawer_scroll.setWidgetResizable(True)
         self.drawer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.drawer_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.drawer_scroll.setViewportMargins(0, 0, 10, 0)
+        self.drawer_scroll.setViewportMargins(0, 0, 6, 0)
 
         self.drawer_content = QWidget()
         self.drawer_content.setObjectName("drawerContent")
@@ -7613,8 +7809,8 @@ class MainWindow(QWidget):
         drawer_shell_layout.addWidget(self.drawer_scroll)
 
         drawer_layout = QVBoxLayout(self.drawer_content)
-        drawer_layout.setContentsMargins(24, 24, 24, 24)
-        drawer_layout.setSpacing(14)
+        drawer_layout.setContentsMargins(22, 24, 22, 24)
+        drawer_layout.setSpacing(12)
 
         drawer_title = QLabel("Settings")
         drawer_title.setObjectName("drawerTitle")
@@ -7627,10 +7823,12 @@ class MainWindow(QWidget):
         self.comfy_root_input.setPlaceholderText("Auto-detect or choose folder")
         self.comfy_root_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.comfy_root_input.setMinimumHeight(44)
+        self.comfy_root_input.setMaximumWidth(DRAWER_CONTROL_WIDTH)
         self.comfy_root_input.textEdited.connect(self.mark_settings_dirty)
         self.comfy_root_pick_button = QPushButton("Выбрать папку")
         self.comfy_root_pick_button.setObjectName("saveSettingsButton")
         self.comfy_root_pick_button.setMinimumHeight(44)
+        self.comfy_root_pick_button.setMaximumWidth(DRAWER_CONTROL_WIDTH)
         self.comfy_root_pick_button.setCursor(Qt.PointingHandCursor)
         self.comfy_root_pick_button.clicked.connect(self.pick_comfy_root)
 
@@ -7638,7 +7836,9 @@ class MainWindow(QWidget):
         self.tunnel_provider_label.setObjectName("drawerLabel")
         self.tunnel_provider_segment = QFrame()
         self.tunnel_provider_segment.setObjectName("themeSegment")
-        self.tunnel_provider_segment.setFixedHeight(64)
+        self.tunnel_provider_segment.setFixedHeight(56)
+        self.tunnel_provider_segment.setMaximumWidth(DRAWER_CONTROL_WIDTH)
+        self.tunnel_provider_segment.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         tunnel_provider_layout = QHBoxLayout(self.tunnel_provider_segment)
         tunnel_provider_layout.setContentsMargins(4, 4, 4, 4)
         tunnel_provider_layout.setSpacing(6)
@@ -7652,8 +7852,9 @@ class MainWindow(QWidget):
             button.setCheckable(True)
             button.setObjectName("segmentButton")
             button.setCursor(Qt.PointingHandCursor)
-            button.setFixedHeight(40)
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setFixedHeight(38)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             button.clicked.connect(partial(self.set_tunnel_provider, provider))
             self.tunnel_provider_group.addButton(button)
             tunnel_provider_layout.addWidget(button)
@@ -7668,6 +7869,7 @@ class MainWindow(QWidget):
         self.subdomain_input.setPlaceholderText("empty = random")
         self.subdomain_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.subdomain_input.setMinimumHeight(44)
+        self.subdomain_input.setMaximumWidth(DRAWER_CONTROL_WIDTH)
         self.subdomain_input.textEdited.connect(self.mark_settings_dirty)
         self.subdomain_hint = QLabel("Optional. Empty starts lt without --subdomain, so LocalTunnel returns a random loca.lt link.")
         self.subdomain_hint.setObjectName("drawerHint")
@@ -7680,12 +7882,15 @@ class MainWindow(QWidget):
         self.port_input.setReadOnly(True)
         self.port_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.port_input.setMinimumHeight(44)
+        self.port_input.setMaximumWidth(DRAWER_CONTROL_WIDTH)
 
         self.launch_mode_label = QLabel("Comfy launch mode")
         self.launch_mode_label.setObjectName("drawerLabel")
         self.launch_mode_segment = QFrame()
         self.launch_mode_segment.setObjectName("themeSegment")
-        self.launch_mode_segment.setFixedHeight(64)
+        self.launch_mode_segment.setFixedHeight(56)
+        self.launch_mode_segment.setMaximumWidth(DRAWER_CONTROL_WIDTH)
+        self.launch_mode_segment.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         launch_mode_layout = QHBoxLayout(self.launch_mode_segment)
         launch_mode_layout.setContentsMargins(4, 4, 4, 4)
         launch_mode_layout.setSpacing(6)
@@ -7698,8 +7903,9 @@ class MainWindow(QWidget):
             button.setCheckable(True)
             button.setObjectName("segmentButton")
             button.setCursor(Qt.PointingHandCursor)
-            button.setFixedHeight(40)
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setFixedHeight(38)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             button.clicked.connect(partial(self.set_launch_mode, mode_key))
             self.launch_mode_group.addButton(button)
             self.launch_mode_buttons[mode_key] = button
@@ -7709,17 +7915,20 @@ class MainWindow(QWidget):
         self.extra_launch_args_label.setObjectName("drawerLabel")
         self.extra_launch_args_input = QLineEdit()
         self.extra_launch_args_input.setObjectName("drawerInput")
-        self.extra_launch_args_input.setPlaceholderText("--disable-dynamic-vram")
+        self.extra_launch_args_input.setPlaceholderText("")
         self.extra_launch_args_input.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.extra_launch_args_input.setMinimumHeight(44)
-        self.extra_launch_args_input.setToolTip("Дополнительные аргументы запуска ComfyUI. По умолчанию стоит --disable-dynamic-vram.")
+        self.extra_launch_args_input.setMaximumWidth(DRAWER_CONTROL_WIDTH)
+        self.extra_launch_args_input.setToolTip("Дополнительные аргументы запуска ComfyUI.")
         self.extra_launch_args_input.textEdited.connect(self.mark_settings_dirty)
 
         self.theme_label = QLabel("Theme")
         self.theme_label.setObjectName("drawerLabel")
         self.theme_segment = QFrame()
         self.theme_segment.setObjectName("themeSegment")
-        self.theme_segment.setFixedHeight(64)
+        self.theme_segment.setFixedHeight(56)
+        self.theme_segment.setMaximumWidth(DRAWER_CONTROL_WIDTH)
+        self.theme_segment.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         theme_segment_layout = QHBoxLayout(self.theme_segment)
         theme_segment_layout.setContentsMargins(4, 4, 4, 4)
         theme_segment_layout.setSpacing(6)
@@ -7730,8 +7939,9 @@ class MainWindow(QWidget):
             button.setCheckable(True)
             button.setObjectName("segmentButton")
             button.setCursor(Qt.PointingHandCursor)
-            button.setFixedHeight(40)
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setFixedHeight(38)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             theme_segment_layout.addWidget(button)
 
         self.theme_group = QButtonGroup(self)
@@ -7754,11 +7964,6 @@ class MainWindow(QWidget):
         ):
             toggle.toggled.connect(self.mark_settings_dirty)
 
-        self.save_settings_button = QPushButton("Save settings")
-        self.save_settings_button.setObjectName("saveSettingsButton")
-        self.save_settings_button.setCursor(Qt.PointingHandCursor)
-        self.save_settings_button.clicked.connect(self.save_settings)
-
         self.repair_launch_button = QPushButton("Repair launch")
         self.repair_launch_button.setObjectName("repairLaunchButton")
         self.repair_launch_button.setCursor(Qt.PointingHandCursor)
@@ -7769,9 +7974,19 @@ class MainWindow(QWidget):
         self.reset_config_button.setCursor(Qt.PointingHandCursor)
         self.reset_config_button.clicked.connect(self.on_reset_config_clicked)
 
+        for row in (self.auto_copy_row, self.auto_restart_row, self.start_on_boot_row):
+            row.setMaximumWidth(DRAWER_CONTROL_WIDTH)
+            row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        for button in (self.repair_launch_button, self.reset_config_button):
+            button.setMaximumWidth(DRAWER_CONTROL_WIDTH)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         drawer_layout.addWidget(self.comfy_root_label)
         drawer_layout.addWidget(self.comfy_root_input)
         drawer_layout.addWidget(self.comfy_root_pick_button)
+        drawer_layout.addWidget(self.tunnel_provider_label)
+        drawer_layout.addWidget(self.tunnel_provider_segment)
+        drawer_layout.addWidget(self.tunnel_provider_hint)
         drawer_layout.addWidget(self.subdomain_label)
         drawer_layout.addWidget(self.subdomain_input)
         drawer_layout.addWidget(self.subdomain_hint)
@@ -7788,7 +8003,6 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.start_on_boot_row)
         drawer_layout.addWidget(self.repair_launch_button)
         drawer_layout.addWidget(self.reset_config_button)
-        drawer_layout.addWidget(self.save_settings_button)
         drawer_layout.addItem(QSpacerItem(0, 8, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
         self.log_hint = QLabel("")
@@ -8096,10 +8310,10 @@ class MainWindow(QWidget):
             }}
             QPushButton#segmentButton {{
                 border: none;
-                border-radius: 18px;
-                min-height: 44px;
-                padding: 0px 14px;
-                font-size: 15px;
+                border-radius: 16px;
+                min-height: 38px;
+                padding: 0px 8px;
+                font-size: 14px;
                 font-weight: 700;
             }}
             QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#githubBrandButton {{
@@ -8391,8 +8605,8 @@ class MainWindow(QWidget):
             QFrame#themeSegment {{
                 background: {self.theme.panel_alt};
                 border: 1px solid {self.theme.border};
-                border-radius: 22px;
-                min-height: 64px;
+                border-radius: 20px;
+                min-height: 56px;
             }}
             QScrollArea#mainScroll, QScrollArea#drawerScroll, QScrollArea#friendsScroll {{
                 background: transparent;
@@ -8635,9 +8849,23 @@ class MainWindow(QWidget):
         if self.syncing_controls:
             return
         self.settings_dirty = True
+        self.schedule_settings_autosave()
 
     def clear_settings_dirty(self) -> None:
         self.settings_dirty = False
+        self.settings_autosave_pending = False
+
+    def schedule_settings_autosave(self) -> None:
+        if self.settings_autosave_pending:
+            return
+        self.settings_autosave_pending = True
+        QTimer.singleShot(350, self.autosave_settings)
+
+    def autosave_settings(self) -> None:
+        self.settings_autosave_pending = False
+        if self.syncing_controls or not self.settings_dirty:
+            return
+        self.save_settings(silent=True)
 
     def load_controls_from_config(self, force: bool = False) -> None:
         sync_values = force or not (self.drawer_open and self.settings_dirty)
@@ -9194,6 +9422,7 @@ class MainWindow(QWidget):
 
     def refresh_onboarding_subdomain_state(self) -> None:
         self.onboarding_subdomain_input.setEnabled(True)
+        provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
         current = sanitize_subdomain(self.onboarding_subdomain_input.text())
         empty = not current
         valid = empty or is_valid_main_subdomain(current)
@@ -9202,7 +9431,9 @@ class MainWindow(QWidget):
             f"background: {self.theme.panel_alt}; border: 2px solid {border}; border-radius: 18px; padding: 12px 14px; font-size: 15px; font-weight: 700; color: {self.theme.text}; selection-background-color: {self.theme.blue};"
         )
         if valid:
-            self.onboarding_subdomain_error.setText("Empty: lt will return a random loca.lt link." if empty else f"URL: https://{current}.loca.lt")
+            domain = "loca.lt"
+            random_hint = "Empty: lt will return a random loca.lt link."
+            self.onboarding_subdomain_error.setText(random_hint if empty else f"URL: https://{current}.{domain}")
             self.onboarding_subdomain_error.setStyleSheet(f"color: {self.theme.green}; font-size: 12px; font-weight: 700;")
             self.onboarding_subdomain_continue.setEnabled(True)
             self.onboarding_subdomain_continue.setStyleSheet(
@@ -9226,8 +9457,7 @@ class MainWindow(QWidget):
             self.update_onboarding_tunnel_buttons()
         elif step == "subdomain":
             self.refresh_onboarding_subdomain_state()
-            if normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER)) == TUNNEL_PROVIDER_LOCALTUNNEL:
-                self.onboarding_subdomain_input.setFocus()
+            self.onboarding_subdomain_input.setFocus()
 
     def refresh_onboarding_flow(self) -> None:
         status = cached_comfy_setup_status(self.config, force=True)
@@ -9636,6 +9866,7 @@ class MainWindow(QWidget):
         self.config["tunnel_provider"] = provider
         self.tunnel_provider_hint.setText(tunnel_provider_description(provider))
         self.subdomain_input.setEnabled(True)
+        self.subdomain_label.setText("LocalTunnel subdomain")
         self.subdomain_hint.setText("Optional. Empty starts lt without --subdomain, so LocalTunnel returns a random loca.lt link.")
         self.update_segment_buttons()
         self.mark_settings_dirty()
@@ -9655,7 +9886,7 @@ class MainWindow(QWidget):
             self.busy_dots = 0
         self.update_action_button()
         if hasattr(self, "repair_launch_button"):
-            self.repair_launch_button.setEnabled(not busy)
+            self.repair_launch_button.setEnabled(True)
         if hasattr(self, "reset_config_button"):
             self.reset_config_button.setEnabled(not busy)
         if self.latest_snap:
@@ -9664,6 +9895,10 @@ class MainWindow(QWidget):
         self.update_install_button()
 
     def animate_busy_button(self) -> None:
+        snap = self.current_snapshot()
+        if snap.get("desired_running") or snap.get("comfy_active") or snap.get("tunnel_active") or snap.get("friend_active"):
+            self.update_action_button(snap)
+            return
         self.busy_dots = (self.busy_dots + 1) % 4
         dots = "." * self.busy_dots
         text = f"Загрузка{dots}"
@@ -9681,6 +9916,7 @@ class MainWindow(QWidget):
             "comfy_root": comfy_root,
             "internet_ok": True,
             "comfy_active": False,
+            "comfy_registry_fetching": False,
             "tunnel_active": False,
             "url_ready": False,
             "tunnel_needs_restart": False,
@@ -9696,14 +9932,22 @@ class MainWindow(QWidget):
 
     def update_action_button(self, snap: dict | None = None) -> None:
         snap = snap or self.current_snapshot()
+        should_stop = snap.get("desired_running") or snap["comfy_active"] or snap["tunnel_active"] or snap["friend_active"]
         if self.busy:
-            if self.action_visual_state != "busy":
+            if should_stop:
+                if self.action_button.text() != "Stop":
+                    self.action_button.setText("Stop")
+                if self.action_visual_state != "stop":
+                    self.action_button.setStyleSheet(
+                        f"background: {self.theme.red}; color: white; border: none; border-radius: 24px; font-size: 16px; font-weight: 800;"
+                    )
+                    self.action_visual_state = "stop"
+            elif self.action_visual_state != "busy":
                 self.action_button.setStyleSheet(
                     f"background: {self.theme.blue}; color: white; border: none; border-radius: 24px; font-size: 16px; font-weight: 800;"
                 )
                 self.action_visual_state = "busy"
             return
-        should_stop = snap["tunnel_active"] or snap["friend_active"]
         if should_stop:
             if self.action_button.text() != "Stop":
                 self.action_button.setText("Stop")
@@ -9722,12 +9966,17 @@ class MainWindow(QWidget):
                 self.action_visual_state = "start"
 
     def on_action_button_clicked(self) -> None:
-        if self.busy:
-            return
         snap = self.latest_snap or runtime_snapshot(include_logs=self.logs_view_open)
+        should_stop = snap.get("desired_running") or snap["comfy_active"] or snap["tunnel_active"] or snap["friend_active"]
+        if self.busy:
+            if should_stop and not self.stop_inflight:
+                self.stop_inflight = True
+                self.run_background(stop_all, job_kind="stop", set_busy=False, show_toast=True)
+            return
         if not self.save_settings(silent=True):
             return
-        if snap["tunnel_active"] or snap["friend_active"]:
+        if should_stop:
+            self.stop_inflight = True
             self.run_background(stop_all, job_kind="manual", set_busy=True, show_toast=True)
         else:
             self.run_background(start_all, job_kind="manual", set_busy=True, show_toast=True)
@@ -9798,6 +10047,8 @@ class MainWindow(QWidget):
         kind, _, meta = clean_job_kind.partition(":")
         if kind == "autorestart":
             self.auto_restart_inflight = False
+        elif kind in {"stop", "manual", "repair"}:
+            self.stop_inflight = False
         elif kind == "restorecomfy":
             self.comfy_restore_inflight = False
         elif kind == "friendrestore" and meta:
@@ -9868,11 +10119,12 @@ class MainWindow(QWidget):
         self.run_background(regenerate_main_tunnel, job_kind="retunnel", set_busy=True, show_toast=True)
 
     def on_repair_launch_clicked(self) -> None:
-        if self.busy:
+        if self.busy and self.stop_inflight:
             return
         if not self.save_settings(silent=True):
             return
-        self.run_background(repair_launch, job_kind="repair", set_busy=True, show_toast=True)
+        self.stop_inflight = True
+        self.run_background(repair_launch, job_kind="repair", set_busy=not self.busy, show_toast=True)
 
     def on_reset_config_clicked(self) -> None:
         if self.busy:
@@ -9939,6 +10191,7 @@ class MainWindow(QWidget):
         resolved_root = coerce_comfy_root(normalized)
         self.comfy_root_input.setText(str(resolved_root or normalized))
         self.mark_settings_dirty()
+        self.autosave_settings()
         if resolved_root:
             self.show_toast("Папка ComfyUI выбрана.")
         else:
@@ -10122,7 +10375,9 @@ class MainWindow(QWidget):
             self.ensure_overlay_stack()
         self.ensure_launch_choice_stack()
 
-        comfy_detail = "Порт 8188 готов" if snap["comfy_active"] else "Ждем запуск"
+        registry_fetching = bool(snap.get("comfy_registry_fetching", False))
+        comfy_display_ready = bool(snap["comfy_active"] and not registry_fetching)
+        comfy_detail = "FETCH ComfyRegistry Data" if registry_fetching else ("Порт 8188 готов" if snap["comfy_active"] else "Ждем запуск")
         current_provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
         if snap["tunnel_active"]:
             tunnel_detail = tunnel_provider_title(current_provider) if snap.get("url_ready", False) else "Проверяем ссылку"
@@ -10146,8 +10401,8 @@ class MainWindow(QWidget):
         else:
             launcher_detail = "Авто-туннель включен" if self.config.get("auto_restart_tunnel", True) else "Авто-туннель выключен"
 
-        self.comfy_card.set_status("Активен" if snap["comfy_active"] else "Оффлайн", self.theme.green if snap["comfy_active"] else self.theme.red, comfy_detail)
-        tunnel_ready = bool(snap["tunnel_active"] and snap.get("url_ready", False))
+        self.comfy_card.set_status("Активен" if comfy_display_ready else ("Проверка" if registry_fetching else "Оффлайн"), self.theme.green if comfy_display_ready else (self.theme.blue if registry_fetching else self.theme.red), comfy_detail)
+        tunnel_ready = bool(snap["tunnel_active"] and snap.get("url_ready", False) and not registry_fetching)
         if tunnel_ready:
             self.tunnel_card.set_status("Активен", self.theme.green, tunnel_detail)
         elif snap["tunnel_active"]:
@@ -10155,27 +10410,24 @@ class MainWindow(QWidget):
         else:
             self.tunnel_card.set_status("Оффлайн", self.theme.red, tunnel_detail)
         self.launcher_card.set_status(launcher_value, launcher_color, launcher_detail)
-        self.logs_status_pill.setText("Активен" if snap["comfy_active"] else "Оффлайн")
+        self.logs_status_pill.setText("Активен" if comfy_display_ready else ("Проверка" if registry_fetching else "Оффлайн"))
         self.logs_status_pill.setStyleSheet(
-            f"background: {self.theme.surface_alt}; color: {(self.theme.green if snap['comfy_active'] else self.theme.red)}; "
+            f"background: {self.theme.surface_alt}; color: {(self.theme.green if comfy_display_ready else (self.theme.blue if registry_fetching else self.theme.red))}; "
             f"border: 1px solid {self.theme.border}; border-radius: 16px; padding: 9px 14px; font-size: 12px; font-weight: 800;"
         )
 
         comfy_log = snap["logs"]["comfy"].splitlines()[-1] if snap["logs"]["comfy"] else ""
         tunnel_log = snap["logs"]["tunnel"].splitlines()[-1] if snap["logs"]["tunnel"] else ""
         friend_log = snap["logs"]["friend"].splitlines()[-1] if snap["logs"]["friend"] else ""
-        main_subdomain = normalize_subdomain(self.config.get("subdomain", ""))
         current_provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
-        if tunnel_log and snap["tunnel_active"] and current_provider == TUNNEL_PROVIDER_LOCALTUNNEL and main_subdomain:
-            detected_subdomain = extract_public_subdomain(tunnel_log)
-            if detected_subdomain and detected_subdomain != main_subdomain:
-                tunnel_log = f"your url is: {friend_url_for_subdomain(main_subdomain)}"
         footer = f"Готово к запуску через {tunnel_provider_title(current_provider)}."
         if not snap["comfy_root"]:
             footer = "Укажи portable-папку ComfyUI в настройках или держи exe рядом с ней."
         elif (snap["desired_running"] or snap["friend_count"]) and not snap.get("internet_ok", True):
             footer = "Нет интернета. Ждем сеть, чтобы поднять основной и friend tunnels."
-        if snap["comfy_active"] and snap["tunnel_active"] and snap.get("url_ready", False):
+        if registry_fetching:
+            footer = "FETCH ComfyRegistry Data..."
+        elif snap["comfy_active"] and snap["tunnel_active"] and snap.get("url_ready", False):
             footer = "Все выглядит готовым."
         elif snap["comfy_active"] and snap["tunnel_active"] and not snap.get("url_ready", False):
             footer = snap["tunnel_error"] or "Туннель запущен, проверяем публичную ссылку."
@@ -10185,7 +10437,7 @@ class MainWindow(QWidget):
             footer = f"Туннель упал. Автоповтор через {snap['retry_in']}с."
         elif snap["desired_running"] and snap["tunnel_error"]:
             footer = snap["tunnel_error"]
-        if tunnel_log:
+        if tunnel_log and not registry_fetching and not (snap.get("tunnel_error") and not snap.get("url_ready", False)):
             footer = tunnel_log
         elif friend_log:
             footer = friend_log
