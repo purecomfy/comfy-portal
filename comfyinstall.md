@@ -2,7 +2,8 @@
 
 Этот файл предназначен для агента, который работает на Linux-машине пользователя и должен полностью поставить ComfyUI, зависимости, ноды, модели и туннель. Не считай это обычной инструкцией для чтения: выполняй шаги, проверяй результат после каждого этапа и в конце выдай пользователю короткий отчет.
 
-Цель: получить рабочий ComfyUI на `0.0.0.0:8188`, установить набор нод и моделей из Comfy Portal, проверить API ComfyUI, затем помочь поднять публичную ссылку через LocalTunnel или Cloudflare Tunnel и при желании создать one-click запускатор.
+Цель: получить рабочий ComfyUI на `0.0.0.0:8188`, установить набор нод и моделей из Comfy Portal, проверить API ComfyUI, затем помочь поднять публичную ссылку через LocalTunnel и при желании создать one-click запускатор.
+
 
 ## Правила Работы Агента
 
@@ -25,7 +26,7 @@ export VENV_DIR="$COMFY_BASE/venv"
 export COMFY_PORT="${COMFY_PORT:-8188}"
 ```
 
-Civitai ключи из Comfy Portal. Они нужны для автоматической загрузки Civitai/civitai.red моделей. Если пользователь не хочет их использовать, можно очистить переменную `CIVITAI_KEYS`.
+Civitai ключи из Comfy Portal. Они нужны для автоматической загрузки Civitai/civitai.red моделей.
 
 ```bash
 CIVITAI_KEYS=(
@@ -238,6 +239,7 @@ CUSTOM_NODES=(
   "ComfyUI DepthAnythingV2|ComfyUI-DepthAnythingV2|https://github.com/kijai/ComfyUI-DepthAnythingV2.git"
   "ComfyUI Mira|ComfyUI_Mira|https://github.com/mirabarukaso/ComfyUI_Mira.git"
   "Comfy Image Saver|comfy-image-saver|https://github.com/giriss/comfy-image-saver.git"
+  "ComfyUI-GGUF|ComfyUI-GGUF|https://github.com/city96/ComfyUI-GGUF.git"
 )
 
 mkdir -p "$COMFY_DIR/custom_nodes"
@@ -280,25 +282,43 @@ done
 - Если файл скачался как HTML, JSON с ошибкой или очень маленький файл, считай скачивание неудачным.
 
 ```bash
+echo "== Model choice =="
+echo "mopMixtureOfPerverts v20, xxxRay DMD2 - слабые: выбирай для слабой GPU или если нужно меньше места."
+echo "Nova Anime XL IL v170 - средняя: хороший вариант по умолчанию."
+echo "Intorealism ZIT v40, RedCraft ErnieRedmix - тяжелые: выбирай только если хватает места и VRAM."
+echo "Оставь пусто для рекомендации: mopofmixture,xxray,novaanime."
+read -r -p "Какие модели скачать? [mopofmixture,xxray,novaanime]: " MODEL_SELECTION
+MODEL_SELECTION="${MODEL_SELECTION:-mopofmixture,xxray,novaanime}"
+MODEL_SELECTION="$(printf '%s' "$MODEL_SELECTION" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+
+model_selected() {
+  group="$1"
+  [ "$group" = "always" ] && return 0
+  case ",$MODEL_SELECTION," in
+    *",$group,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 MODELS=(
-  "SAM|sam_vit_b_01ec64.pth|ComfyUI/models/sams|https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-  "RealESRGAN x2|RealESRGAN_x2.pth|ComfyUI/models/upscale_models|https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x2.pth?download=true"
-  "Control LoRA Canny|control-lora-canny-rank256.safetensors|ComfyUI/models/controlnet|https://huggingface.co/stabilityai/control-lora/resolve/main/control-LoRAs-rank256/control-lora-canny-rank256.safetensors?download=true"
-  "VAE|ae.safetensors|ComfyUI/models/vae|https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/vae/ae.safetensors?download=true"
-  "CLIP / text_encoders|qwen_3_4b.safetensors|ComfyUI/models/text_encoders|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors?download=true"
-  "ControlNet Union|Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors|ComfyUI/models/model_patches|https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors?download=true"
-  "Embeddings|embedding_model.pt|ComfyUI/models/embeddings|https://civitai.com/api/download/models/2121199?type=Model&format=Other"
-  "Upscale 4x_NMKD-Siax_200k|4x_NMKD-Siax_200k.pth|ComfyUI/models/upscale_models|https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth?download=true"
-  "mopMixtureOfPerverts_v20.safetensors|mopMixtureOfPerverts_v20.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2159501?type=Model&format=SafeTensor&size=pruned&fp=fp16"
-  "xxxRay_dmd2.safetensors|xxxRay_dmd2.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/1624818?type=Model&format=SafeTensor&size=full&fp=fp16"
-  "novaAnimeXL_ilV170.safetensors|novaAnimeXL_ilV170.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2741698?type=Model&format=SafeTensor&size=pruned&fp=fp16"
-  "Intorealism UNet|intorealism.safetensors|ComfyUI/models/unet|https://civitai.com/api/download/models/2835157?type=Model&format=SafeTensor&size=full&fp=fp8"
-  "redcraft_ernieRedmix.safetensors|redcraft_ernieRedmix.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2891710?type=Diffusion%20Model&format=Other&fp=fp8"
-  "redcraft_ernieRedmix_txt.safetensors|redcraft_ernieRedmix_txt.safetensors|ComfyUI/models/text_encoders|https://civitai.red/api/download/models/2891710?fileId=2773413"
-  "flux2-tiny-vae.safetensors|flux2-tiny-vae.safetensors|ComfyUI/models/vae|https://civitai.red/api/download/models/2891710?fileId=2773335"
-  "bbox/face_yolov8m.pt|face_yolov8m.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/alexgenovese/ultralytics/resolve/main/bbox/face_yolov8m.pt?download=true"
-  "bbox/Eyeful_v2-Paired.pt|Eyeful_v2-Paired.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/MidnightRunner/Ultralytics/resolve/main/bbox/Eyeful_v2-Paired.pt?download=true"
-  "bbox/hand_yolov9c.pt|hand_yolov9c.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/Bingsu/adetailer/resolve/main/hand_yolov9c.pt?download=true"
+  "SAM|sam_vit_b_01ec64.pth|ComfyUI/models/sams|https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth|always"
+  "RealESRGAN x2|RealESRGAN_x2.pth|ComfyUI/models/upscale_models|https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x2.pth?download=true|always"
+  "Control LoRA Canny|control-lora-canny-rank256.safetensors|ComfyUI/models/controlnet|https://huggingface.co/stabilityai/control-lora/resolve/main/control-LoRAs-rank256/control-lora-canny-rank256.safetensors?download=true|always"
+  "VAE|ae.safetensors|ComfyUI/models/vae|https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/vae/ae.safetensors?download=true|always"
+  "CLIP / text_encoders|qwen_3_4b.safetensors|ComfyUI/models/text_encoders|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors?download=true|always"
+  "ControlNet Union|Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors|ComfyUI/models/model_patches|https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors?download=true|always"
+  "Embeddings|embedding_model.pt|ComfyUI/models/embeddings|https://civitai.com/api/download/models/2121199?type=Model&format=Other|always"
+  "Upscale 4x_NMKD-Siax_200k|4x_NMKD-Siax_200k.pth|ComfyUI/models/upscale_models|https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth?download=true|always"
+  "mopMixtureOfPerverts v20|mopMixtureOfPerverts_v20.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2159501?type=Model&format=SafeTensor&size=pruned&fp=fp16|mopofmixture"
+  "xxxRay DMD2|xxxRay_dmd2.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/1624818?type=Model&format=SafeTensor&size=full&fp=fp16|xxray"
+  "Nova Anime XL IL v170|novaAnimeXL_ilV170.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2741698?type=Model&format=SafeTensor&size=pruned&fp=fp16|novaanime"
+  "Intorealism ZIT v40|intorealism_zitV40.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2912231?type=Model&format=SafeTensor&size=full&fp=fp8|intorealism"
+  "RedCraft ErnieRedmix UNet|redcraft_ernieRedmix.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2891710?type=Diffusion%20Model&format=Other&fp=fp8|redcraft"
+  "RedCraft ErnieRedmix Text Encoder|redcraft_ernieRedmix_txt.safetensors|ComfyUI/models/text_encoders|https://civitai.red/api/download/models/2891710?fileId=2773413|redcraft"
+  "Flux2 Tiny VAE|flux2-tiny-vae.safetensors|ComfyUI/models/vae|https://civitai.red/api/download/models/2891710?fileId=2773335|redcraft"
+  "bbox/face_yolov8m.pt|face_yolov8m.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/alexgenovese/ultralytics/resolve/main/bbox/face_yolov8m.pt?download=true|always"
+  "bbox/Eyeful_v2-Paired.pt|Eyeful_v2-Paired.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/MidnightRunner/Ultralytics/resolve/main/bbox/Eyeful_v2-Paired.pt?download=true|always"
+  "bbox/hand_yolov9c.pt|hand_yolov9c.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/Bingsu/adetailer/resolve/main/hand_yolov9c.pt?download=true|always"
 )
 
 download_model() {
@@ -390,7 +410,11 @@ MODEL_OK=()
 MODEL_FAIL=()
 
 for item in "${MODELS[@]}"; do
-  IFS='|' read -r title filename rel_dir url <<< "$item"
+  IFS='|' read -r title filename rel_dir url model_group <<< "$item"
+  if ! model_selected "${model_group:-always}"; then
+    echo "Skipped by model choice: $title"
+    continue
+  fi
   if download_model "$title" "$filename" "$rel_dir" "$url"; then
     MODEL_OK+=("$title")
   else
@@ -514,42 +538,7 @@ curl -fsS "$PUBLIC_URL/system_stats" | head -c 500 && echo
 
 Если открывается чужая HTML-страница, это не рабочий туннель. Смени subdomain или используй случайную ссылку.
 
-## Этап 11. Туннель Cloudflare
-
-Cloudflare обычно стабильнее, но quick tunnel дает случайную ссылку.
-
-Установка `cloudflared`:
-
-```bash
-if ! command -v cloudflared >/dev/null 2>&1; then
-  tmp="$(mktemp)"
-  arch="$(uname -m)"
-  case "$arch" in
-    x86_64|amd64) cloudflared_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
-    aarch64|arm64) cloudflared_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
-    armv7l|armhf) cloudflared_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm" ;;
-    *) echo "Unsupported cloudflared arch: $arch"; exit 1 ;;
-  esac
-  curl -L --fail -o "$tmp" "$cloudflared_url"
-  chmod +x "$tmp"
-  sudo mv "$tmp" /usr/local/bin/cloudflared
-fi
-cloudflared --version
-```
-
-Запуск:
-
-```bash
-cloudflared tunnel --url "http://127.0.0.1:$COMFY_PORT" --protocol http2
-```
-
-Найди ссылку вида `https://something.trycloudflare.com` и проверь:
-
-```bash
-curl -fsS "https://something.trycloudflare.com/system_stats" | head -c 500 && echo
-```
-
-## Этап 12. One-click Скрипты
+## Этап 11. One-click Скрипты
 
 Предложи пользователю создать один из вариантов.
 
@@ -596,44 +585,6 @@ chmod +x "$COMFY_BASE/start_comfy_localtunnel.sh"
 echo "Created: $COMFY_BASE/start_comfy_localtunnel.sh"
 ```
 
-### start_comfy_cloudflare.sh
-
-```bash
-cat > "$COMFY_BASE/start_comfy_cloudflare.sh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-
-COMFY_BASE="${COMFY_BASE:-$HOME/Comfy}"
-COMFY_DIR="$COMFY_BASE/ComfyUI"
-VENV_DIR="$COMFY_BASE/venv"
-COMFY_PORT="${COMFY_PORT:-8188}"
-mkdir -p "$COMFY_BASE/logs"
-
-if ! curl -fsS "http://127.0.0.1:$COMFY_PORT/system_stats" >/dev/null 2>&1; then
-  cd "$COMFY_DIR"
-  "$VENV_DIR/bin/python" main.py --listen 0.0.0.0 --port "$COMFY_PORT" > "$COMFY_BASE/logs/comfy.stdout.log" 2> "$COMFY_BASE/logs/comfy.stderr.log" &
-  echo $! > "$COMFY_BASE/comfy.pid"
-fi
-
-for i in $(seq 1 90); do
-  curl -fsS "http://127.0.0.1:$COMFY_PORT/system_stats" >/dev/null 2>&1 && break
-  sleep 1
-done
-
-if ! curl -fsS "http://127.0.0.1:$COMFY_PORT/system_stats" >/dev/null 2>&1; then
-  echo "ComfyUI did not become ready."
-  tail -n 120 "$COMFY_BASE/logs/comfy.stderr.log" 2>/dev/null || true
-  tail -n 120 "$COMFY_BASE/logs/comfy.stdout.log" 2>/dev/null || true
-  exit 1
-fi
-
-cloudflared tunnel --url "http://127.0.0.1:$COMFY_PORT" --protocol http2 2>&1 | tee "$COMFY_BASE/logs/cloudflare.log"
-SH
-
-chmod +x "$COMFY_BASE/start_comfy_cloudflare.sh"
-echo "Created: $COMFY_BASE/start_comfy_cloudflare.sh"
-```
-
 ### stop_comfy.sh
 
 ```bash
@@ -648,7 +599,6 @@ if [ -f "$COMFY_BASE/comfy.pid" ]; then
 fi
 pkill -f "ComfyUI/main.py" 2>/dev/null || true
 pkill -f "localtunnel" 2>/dev/null || true
-pkill -f "cloudflared tunnel --url" 2>/dev/null || true
 echo "Stopped ComfyUI and tunnels."
 SH
 
@@ -656,7 +606,7 @@ chmod +x "$COMFY_BASE/stop_comfy.sh"
 echo "Created: $COMFY_BASE/stop_comfy.sh"
 ```
 
-## Этап 13. Итоговый Отчет
+## Этап 12. Итоговый Отчет
 
 В конце выведи:
 
@@ -684,6 +634,5 @@ fi
 Скажи пользователю:
 
 - Для LocalTunnel: запускать `~/Comfy/start_comfy_localtunnel.sh`.
-- Для Cloudflare: запускать `~/Comfy/start_comfy_cloudflare.sh`.
 - Для остановки: запускать `~/Comfy/stop_comfy.sh`.
-- Если нужна постоянная ссылка, quick tunnels не подходят; надо настраивать постоянный Cloudflare Tunnel с доменом.
+- Если нужен свой адрес, используй LocalTunnel subdomain и обязательно проверяй `PUBLIC_URL/system_stats`.

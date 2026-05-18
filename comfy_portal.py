@@ -34,6 +34,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -140,17 +141,50 @@ MODEL_SIZE_HINTS = {
     "ControlNet Union": 3 * 1024 * 1024 * 1024,
     "Embeddings": 80 * 1024 * 1024,
     "Upscale 4x_NMKD-Siax_200k": 70 * 1024 * 1024,
-    "mopMixtureOfPerverts_v20.safetensors": 2 * 1024 * 1024 * 1024,
-    "xxxRay_dmd2.safetensors": 2 * 1024 * 1024 * 1024,
-    "novaAnimeXL_ilV170.safetensors": 2 * 1024 * 1024 * 1024,
-    "intorealism.safetensors": 12 * 1024 * 1024 * 1024,
-    "redcraft_ernieRedmix.safetensors": 4 * 1024 * 1024 * 1024,
-    "redcraft_ernieRedmix_txt.safetensors": 8 * 1024 * 1024 * 1024,
-    "flux2-tiny-vae.safetensors": 350 * 1024 * 1024,
+    "mopMixtureOfPerverts v20": 2 * 1024 * 1024 * 1024,
+    "xxxRay DMD2": 2 * 1024 * 1024 * 1024,
+    "Nova Anime XL IL v170": 2 * 1024 * 1024 * 1024,
+    "Intorealism ZIT v40": 12 * 1024 * 1024 * 1024,
+    "RedCraft ErnieRedmix UNet": 4 * 1024 * 1024 * 1024,
+    "RedCraft ErnieRedmix Text Encoder": 8 * 1024 * 1024 * 1024,
+    "Flux2 Tiny VAE": 350 * 1024 * 1024,
     "bbox/face_yolov8m.pt": 60 * 1024 * 1024,
     "bbox/Eyeful_v2-Paired.pt": 90 * 1024 * 1024,
     "bbox/hand_yolov9c.pt": 50 * 1024 * 1024,
 }
+MODEL_CHOICE_SPECS = (
+    {
+        "key": "mopofmixture",
+        "title": "mopMixtureOfPerverts v20",
+        "weight": "слабая",
+        "hint": "для слабых GPU",
+    },
+    {
+        "key": "xxray",
+        "title": "xxxRay DMD2",
+        "weight": "слабая",
+        "hint": "для слабых GPU",
+    },
+    {
+        "key": "novaanime",
+        "title": "Nova Anime XL IL v170",
+        "weight": "средняя",
+        "hint": "баланс качества и размера",
+    },
+    {
+        "key": "intorealism",
+        "title": "Intorealism ZIT v40",
+        "weight": "тяжелая",
+        "hint": "ставить только если хватает места и VRAM",
+    },
+    {
+        "key": "redcraft",
+        "title": "RedCraft ErnieRedmix",
+        "weight": "тяжелая",
+        "hint": "ставить только если хватает места и VRAM",
+    },
+)
+DEFAULT_SELECTED_MODEL_CHOICES = tuple(choice["key"] for choice in MODEL_CHOICE_SPECS)
 NODE_SIZE_HINT_BYTES = 220 * 1024 * 1024
 PORTABLE_SIZE_HINT_BYTES = int(1.9 * 1024 * 1024 * 1024)
 MANAGER_SIZE_HINT_BYTES = 40 * 1024 * 1024
@@ -224,64 +258,71 @@ STARTER_MODEL_SPECS = (
         "relative_dir": ("ComfyUI", "models", "upscale_models"),
     },
     {
-        "title": "mopMixtureOfPerverts_v20.safetensors",
+        "title": "mopMixtureOfPerverts v20",
         "filename": "mopMixtureOfPerverts_v20.safetensors",
         "url": "https://civitai.red/api/download/models/2159501?type=Model&format=SafeTensor&size=pruned&fp=fp16",
         "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "model_choice_key": "mopofmixture",
         "detect_names": ("mopMixtureOfPerverts_v20.safetensors",),
         "detect_contains_any": ("mopmixtureofperverts", "mixtureofperverts", "2159501"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "xxxRay_dmd2.safetensors",
+        "title": "xxxRay DMD2",
         "filename": "xxxRay_dmd2.safetensors",
         "url": "https://civitai.red/api/download/models/1624818?type=Model&format=SafeTensor&size=full&fp=fp16",
         "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "model_choice_key": "xxray",
         "detect_names": ("xxxRay_dmd2.safetensors",),
         "detect_contains_any": ("xxxray", "ray_dmd2", "dmd2", "1624818"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "novaAnimeXL_ilV170.safetensors",
+        "title": "Nova Anime XL IL v170",
         "filename": "novaAnimeXL_ilV170.safetensors",
         "url": "https://civitai.red/api/download/models/2741698?type=Model&format=SafeTensor&size=pruned&fp=fp16",
         "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "model_choice_key": "novaanime",
         "detect_names": ("novaAnimeXL_ilV170.safetensors",),
         "detect_contains_any": ("novaanimexl", "novaanime", "2741698"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "intorealism.safetensors",
-        "filename": "intorealism.safetensors",
-        "url": "https://civitai.com/api/download/models/2835157?type=Model&format=SafeTensor&size=full&fp=fp8",
+        "title": "Intorealism ZIT v40",
+        "filename": "intorealism_zitV40.safetensors",
+        "url": "https://civitai.red/api/download/models/2912231?type=Model&format=SafeTensor&size=full&fp=fp8",
         "relative_dir": ("ComfyUI", "models", "unet"),
-        "detect_names": ("intorealism.safetensors",),
-        "detect_contains_any": ("intorealism", "2835157"),
+        "model_choice_key": "intorealism",
+        "detect_names": ("intorealism_zitV40.safetensors", "intorealism.safetensors"),
+        "detect_contains_any": ("intorealism_zitv40", "zitv40", "intorealism", "2912231"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "redcraft_ernieRedmix.safetensors",
+        "title": "RedCraft ErnieRedmix UNet",
         "filename": "redcraft_ernieRedmix.safetensors",
         "url": "https://civitai.red/api/download/models/2891710?type=Diffusion%20Model&format=Other&fp=fp8",
         "relative_dir": ("ComfyUI", "models", "unet"),
+        "model_choice_key": "redcraft",
         "detect_names": ("redcraft_ernieRedmix.safetensors",),
         "detect_contains_any": ("redcraft", "ernieredmix", "2891710"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "redcraft_ernieRedmix_txt.safetensors",
+        "title": "RedCraft ErnieRedmix Text Encoder",
         "filename": "redcraft_ernieRedmix_txt.safetensors",
         "url": "https://civitai.red/api/download/models/2891710?fileId=2773413",
         "relative_dir": ("ComfyUI", "models", "text_encoders"),
+        "model_choice_key": "redcraft",
         "detect_names": ("redcraft_ernieRedmix_txt.safetensors",),
         "detect_contains_any": ("ernieredmix_txt", "redcraft", "2773413"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "flux2-tiny-vae.safetensors",
+        "title": "Flux2 Tiny VAE",
         "filename": "flux2-tiny-vae.safetensors",
         "url": "https://civitai.red/api/download/models/2891710?fileId=2773335",
         "relative_dir": ("ComfyUI", "models", "vae"),
+        "model_choice_key": "redcraft",
         "detect_names": ("flux2-tiny-vae.safetensors",),
         "detect_contains_any": ("flux2-tiny-vae", "tiny-vae", "2773335"),
         "detect_extensions": (".safetensors", ".ckpt"),
@@ -551,6 +592,13 @@ REQUIRED_NODE_SPECS = (
         "repo": "https://github.com/giriss/comfy-image-saver.git",
         "aliases": ["comfy-image-saver", "Image Saver", "FancyTimerNode", "Execution Timer"],
     },
+    {
+        "title": "ComfyUI-GGUF",
+        "cnr_id": "comfyui-gguf",
+        "folder": "ComfyUI-GGUF",
+        "repo": "https://github.com/city96/ComfyUI-GGUF.git",
+        "aliases": ["ComfyUI-GGUF", "GGUF", "city96/ComfyUI-GGUF"],
+    },
 )
 WORKFLOW_CANDIDATE_NAMES = (
     "mainapi1.json",
@@ -722,7 +770,40 @@ def default_config(check_subdomain_availability: bool = False) -> dict:
         "start_on_boot": False,
         "comfy_root": "",
         "civitai_api_keys_b64": [],
+        "selected_model_choices": list(DEFAULT_SELECTED_MODEL_CHOICES),
     }
+
+
+def normalize_selected_model_choices(value: object) -> list[str]:
+    valid_order = [str(choice["key"]) for choice in MODEL_CHOICE_SPECS]
+    valid = set(valid_order)
+    if value is None:
+        raw_items = list(DEFAULT_SELECTED_MODEL_CHOICES)
+    elif isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = [str(item).strip() for item in value]
+    else:
+        raw_items = list(DEFAULT_SELECTED_MODEL_CHOICES)
+    selected = {item for item in raw_items if item in valid}
+    if not selected and value not in ([], (), set()):
+        selected = set(DEFAULT_SELECTED_MODEL_CHOICES)
+    return [key for key in valid_order if key in selected]
+
+
+def selected_model_choice_keys(config: dict | None = None) -> set[str]:
+    config = config or load_config()
+    return set(normalize_selected_model_choices(config.get("selected_model_choices")))
+
+
+def model_spec_is_selected(spec: dict, selected_keys: set[str]) -> bool:
+    choice_key = str(spec.get("model_choice_key", "") or "").strip()
+    return not choice_key or choice_key in selected_keys
+
+
+def selectable_starter_model_specs(config: dict | None = None) -> list[dict]:
+    selected_keys = selected_model_choice_keys(config)
+    return [spec for spec in STARTER_MODEL_SPECS if model_spec_is_selected(spec, selected_keys)]
 
 
 def default_state() -> dict:
@@ -862,6 +943,7 @@ def load_config() -> dict:
         config["onboarding_completed"] = bool(config.get("launch_mode_confirmed")) and bool(existing_raw)
     else:
         config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
+    config["selected_model_choices"] = normalize_selected_model_choices(config.get("selected_model_choices"))
     config.pop("smooth_animations", None)
     config.pop("civitai_api_key", None)
     config.pop("civitai_api_keys", None)
@@ -880,6 +962,7 @@ def save_config(config: dict) -> None:
     config["extra_launch_args"] = normalize_extra_launch_args(config.get("extra_launch_args", ""))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
     config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
+    config["selected_model_choices"] = normalize_selected_model_choices(config.get("selected_model_choices"))
     write_json(CONFIG_PATH, config)
     invalidate_setup_status_cache()
 
@@ -1325,7 +1408,7 @@ def estimate_missing_setup_bytes(status: dict) -> int:
     if not status.get("manager_ready"):
         total += MANAGER_SIZE_HINT_BYTES
     for model in status.get("models", []):
-        if not model.get("ready"):
+        if not model.get("ready") and not model.get("skipped"):
             total += int(MODEL_SIZE_HINTS.get(model.get("title", ""), 250 * 1024 * 1024))
     for node in status.get("nodes", []):
         if not node.get("ready"):
@@ -2133,6 +2216,10 @@ def setup_presence_stamp(root: str) -> str:
     return "|".join(parts)
 
 
+def setup_model_is_missing(item: dict) -> bool:
+    return not item.get("ready") and not item.get("skipped")
+
+
 def setup_status_cache_key(config: dict | None = None) -> str:
     config = config or load_config()
     root = normalize_root_path(config.get("comfy_root", ""))
@@ -2144,6 +2231,7 @@ def setup_status_cache_key(config: dict | None = None) -> str:
             str(source.get("source_root", "")),
             str(source.get("archive_path", "")),
             str(source.get("url", "")),
+            ",".join(normalize_selected_model_choices(config.get("selected_model_choices"))),
             comfy_marker_stamp(Path(root) if root else None),
             secret_list_stamp(config.get("civitai_api_keys_b64", [])),
             setup_presence_stamp(root),
@@ -2162,16 +2250,36 @@ def comfy_setup_status(config: dict | None = None) -> dict:
     workflow_specs, unresolved_workflow_nodes, workflow_files = workflow_required_node_specs()
     manager_ready = manager_is_installed(root)
     model_states = []
+    selected_keys = selected_model_choice_keys(config)
+    choice_by_key = {str(choice["key"]): choice for choice in MODEL_CHOICE_SPECS}
     for spec in STARTER_MODEL_SPECS:
         target = starter_model_target_path(root, spec) if root else None
+        target_dir = starter_model_target_dir(root, spec) if root else None
         ready = starter_model_exists(root, spec)
+        choice_key = str(spec.get("model_choice_key", "") or "").strip()
+        selected = model_spec_is_selected(spec, selected_keys)
+        skipped = bool(choice_key and not selected and not ready)
+        ready_for_status = ready
+        if skipped:
+            ready = True
         link_status = {"available": True, "message": "Ссылка доступна."} if ready else cached_direct_download_status(spec)
+        if skipped:
+            link_status = {"available": True, "message": "Skipped by model selection.", "checked": True}
+        choice = choice_by_key.get(choice_key, {})
         model_states.append(
             {
                 "title": spec["title"],
+                "filename": str(spec.get("filename", "") or ""),
                 "path": str(target) if target else "",
+                "directory": str(target_dir) if target_dir else "",
+                "relative_dir": str(Path(*spec.get("relative_dir", ()))),
                 "url": str(spec.get("url", "")),
-                "ready": ready,
+                "ready": ready_for_status,
+                "selected": selected,
+                "skipped": skipped,
+                "choice_key": choice_key,
+                "choice_label": str(choice.get("title", "") or ""),
+                "choice_weight": str(choice.get("weight", "") or ""),
                 "download_available": bool(link_status.get("available", False)),
                 "download_message": str(link_status.get("message", "") or ""),
                 "download_checked": bool(link_status.get("checked", False)),
@@ -2190,6 +2298,8 @@ def comfy_setup_status(config: dict | None = None) -> dict:
         "comfy_latest_url": str(update_status.get("latest_url", "") or ""),
         "manager_ready": manager_ready,
         "models": model_states,
+        "model_choices": [dict(choice) for choice in MODEL_CHOICE_SPECS],
+        "selected_model_choices": normalize_selected_model_choices(config.get("selected_model_choices")),
         "nodes": collect_node_states(root),
         "workflow_files": workflow_files,
         "unresolved_workflow_nodes": unresolved_workflow_nodes,
@@ -2225,7 +2335,7 @@ def comfy_setup_has_missing(status: dict) -> bool:
     return (
         (not status.get("comfy_ready"))
         or (not status.get("manager_ready"))
-        or any(not item.get("ready") for item in status.get("models", []))
+        or any(setup_model_is_missing(item) for item in status.get("models", []))
         or any(not item.get("ready") for item in status.get("nodes", []))
     )
 
@@ -2234,7 +2344,7 @@ def comfy_core_has_missing(status: dict) -> bool:
     return (
         (not status.get("comfy_ready"))
         or (not status.get("manager_ready"))
-        or any(not item.get("ready") for item in status.get("models", []))
+        or any(setup_model_is_missing(item) for item in status.get("models", []))
     )
 
 
@@ -2252,7 +2362,7 @@ def comfy_core_missing_count(status: dict) -> int:
         count += 1
     if not status.get("manager_ready"):
         count += 1
-    count += sum(1 for item in status.get("models", []) if not item.get("ready"))
+    count += sum(1 for item in status.get("models", []) if setup_model_is_missing(item))
     return count
 
 
@@ -2266,7 +2376,7 @@ def missing_setup_titles(status: dict, include_nodes: bool = True) -> list[str]:
         missing.append("Portable ComfyUI")
     if not status.get("manager_ready"):
         missing.append("ComfyUI Manager")
-    missing.extend(str(item.get("title", "model")) for item in status.get("models", []) if not item.get("ready"))
+    missing.extend(str(item.get("title", "model")) for item in status.get("models", []) if setup_model_is_missing(item))
     if include_nodes:
         missing.extend(str(item.get("title", "node")) for item in status.get("nodes", []) if not item.get("ready"))
     return missing
@@ -2292,7 +2402,7 @@ def assert_nodes_verified(root: Path) -> None:
 
 
 def estimate_setup_eta(status: dict) -> str:
-    missing_models = sum(1 for item in status.get("models", []) if not item.get("ready"))
+    missing_models = sum(1 for item in status.get("models", []) if setup_model_is_missing(item))
     comfy_missing = not status.get("comfy_ready")
     comfy_update = bool(status.get("comfy_update_available"))
     manager_missing = not status.get("manager_ready")
@@ -3232,7 +3342,7 @@ def install_comfyui_manager(root: Path, progress=None) -> str:
 
 
 def pending_starter_model_specs(root: Path | None, specs: list[dict] | tuple[dict, ...] | None = None) -> list[dict]:
-    specs_to_check = list(specs or STARTER_MODEL_SPECS)
+    specs_to_check = selectable_starter_model_specs() if specs is None else list(specs)
     if not root:
         return specs_to_check
     pending: list[dict] = []
@@ -3240,6 +3350,16 @@ def pending_starter_model_specs(root: Path | None, specs: list[dict] | tuple[dic
         if not starter_model_exists(root, spec):
             pending.append(spec)
     return pending
+
+
+def starter_model_spec_by_title(value: str) -> dict | None:
+    clean = str(value or "").strip().lower()
+    if not clean:
+        return None
+    for spec in STARTER_MODEL_SPECS:
+        if clean in {str(spec.get("title", "")).strip().lower(), str(spec.get("filename", "")).strip().lower()}:
+            return spec
+    return None
 
 
 def pending_node_specs(root: Path | None, specs: list[dict] | tuple[dict, ...] | None = None) -> list[dict]:
@@ -3361,6 +3481,37 @@ def install_starter_models(root: Path, progress=None, specs: list[dict] | tuple[
         if progress:
             progress(index / total_count, f"{spec['title']} готов", build_setup_progress_meta(row_key, "done", 100, "Файл проверен"))
     return results
+
+
+def install_single_starter_model_setup(model_title: str, progress=None) -> str:
+    root = current_comfy_root()
+    if not root:
+        raise RuntimeError("Сначала нужна установленная portable-папка ComfyUI.")
+    spec = starter_model_spec_by_title(model_title)
+    if not spec:
+        raise RuntimeError(f"Модель не найдена в списке установки: {model_title}")
+
+    def emit(fraction: float, detail: str, meta: str = "") -> None:
+        if not progress:
+            return
+        percent = int(max(0, min(100, round(float(fraction) * 100))))
+        progress(detail, percent, meta)
+
+    if starter_model_exists(root, spec):
+        if progress:
+            progress(
+                f"{spec['title']} уже на месте",
+                100,
+                build_setup_progress_meta(f"model:{spec['title']}", "done", 100, "Файл уже установлен"),
+            )
+        return f"{spec['title']} уже установлена."
+
+    results = install_starter_models(root, progress=emit, specs=[spec])
+    invalidate_setup_status_cache()
+    if not starter_model_exists(root, spec):
+        detail = " ".join(results).strip() or "файл не найден после установки"
+        raise RuntimeError(f"{spec['title']} не установлена: {detail}")
+    return f"{spec['title']} установлена."
 
 
 def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[dict, ...] | None = None) -> list[str]:
@@ -6310,12 +6461,16 @@ class ComfyGuideDialog(QDialog):
         )
 
 class SetupStatusRow(QFrame):
+    install_requested = Signal(str)
+
     def __init__(self, title: str, theme: Theme):
         super().__init__()
         self.theme = theme
         self.ready = False
         self.state_kind = "missing"
         self.link_url = ""
+        self.install_key = ""
+        self.install_enabled = True
         self.setObjectName("setupStatusRow")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -6328,6 +6483,14 @@ class SetupStatusRow(QFrame):
         self.detail_label = QLabel("")
         self.detail_label.setObjectName("setupRowDetail")
         self.detail_label.setWordWrap(True)
+        self.file_line = QLineEdit("")
+        self.file_line.setObjectName("setupRowCopyText")
+        self.file_line.setReadOnly(True)
+        self.file_line.hide()
+        self.path_line = QLineEdit("")
+        self.path_line.setObjectName("setupRowCopyText")
+        self.path_line.setReadOnly(True)
+        self.path_line.hide()
         self.progress = QProgressBar()
         self.progress.setObjectName("setupRowProgress")
         self.progress.setTextVisible(False)
@@ -6340,6 +6503,8 @@ class SetupStatusRow(QFrame):
         self.progress_meta.setVisible(False)
         text_layout.addWidget(self.title_label)
         text_layout.addWidget(self.detail_label)
+        text_layout.addWidget(self.file_line)
+        text_layout.addWidget(self.path_line)
         text_layout.addWidget(self.progress)
         text_layout.addWidget(self.progress_meta)
 
@@ -6355,9 +6520,17 @@ class SetupStatusRow(QFrame):
         self.link_button.setFixedHeight(34)
         self.link_button.clicked.connect(self.open_link)
         self.link_button.hide()
+        self.install_button = QPushButton("Установить")
+        self.install_button.setObjectName("setupRowInstallButton")
+        self.install_button.setCursor(Qt.PointingHandCursor)
+        self.install_button.setMinimumWidth(108)
+        self.install_button.setFixedHeight(34)
+        self.install_button.clicked.connect(lambda: self.install_requested.emit(self.install_key))
+        self.install_button.hide()
 
         layout.addLayout(text_layout, 1)
         layout.addWidget(self.link_button, 0, Qt.AlignRight | Qt.AlignVCenter)
+        layout.addWidget(self.install_button, 0, Qt.AlignRight | Qt.AlignVCenter)
         layout.addWidget(self.badge, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.apply_theme(theme)
 
@@ -6378,6 +6551,16 @@ class SetupStatusRow(QFrame):
             QLabel#setupRowDetail, QLabel#setupRowMeta {{
                 color: {theme.muted};
                 font-size: 12px;
+            }}
+            QLineEdit#setupRowCopyText {{
+                background: {theme.panel_alt};
+                color: {theme.text};
+                border: 1px solid {theme.border};
+                border-radius: 10px;
+                padding: 5px 8px;
+                font-size: 12px;
+                selection-background-color: {theme.blue};
+                selection-color: white;
             }}
             QProgressBar#setupRowProgress {{
                 background: {theme.surface_alt};
@@ -6400,6 +6583,23 @@ class SetupStatusRow(QFrame):
             QPushButton#setupRowLinkButton:hover {{
                 background: {theme.soft_btn_hover};
             }}
+            QPushButton#setupRowInstallButton {{
+                background: {theme.red};
+                color: white;
+                border: none;
+                border-radius: 17px;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 0px 12px;
+            }}
+            QPushButton#setupRowInstallButton:hover {{
+                background: #e54858;
+            }}
+            QPushButton#setupRowInstallButton:disabled {{
+                background: {theme.soft_btn};
+                color: {theme.muted};
+                border: 1px solid {theme.border};
+            }}
             """
         )
         self.update_badge(self.ready, self.state_kind)
@@ -6411,6 +6611,22 @@ class SetupStatusRow(QFrame):
     def open_link(self) -> None:
         if self.link_url:
             QDesktopServices.openUrl(QUrl(self.link_url))
+
+    def set_copy_fields(self, filename: str | None = None, directory: str | None = None) -> None:
+        file_text = str(filename or "").strip()
+        directory_text = str(directory or "").strip()
+        self.file_line.setText(file_text)
+        self.file_line.setVisible(bool(file_text))
+        self.path_line.setText(directory_text)
+        self.path_line.setVisible(bool(directory_text))
+
+    def set_install_action(self, key: str | None, enabled: bool = True) -> None:
+        self.install_key = str(key or "").strip()
+        self.install_enabled = bool(enabled)
+
+    def set_install_enabled(self, enabled: bool) -> None:
+        self.install_enabled = bool(enabled)
+        self.install_button.setEnabled(self.install_enabled and self.install_button.isVisible())
 
     def update_badge(self, ready: bool, state_kind: str = "missing") -> None:
         self.ready = ready
@@ -6430,8 +6646,13 @@ class SetupStatusRow(QFrame):
             bg = "rgba(250, 204, 21, 0.12)"
             fg = "#f59e0b"
             border = "rgba(250, 204, 21, 0.24)"
+        elif state_kind == "skipped":
+            text = "Пропущено"
+            bg = "rgba(59, 130, 246, 0.10)"
+            fg = self.theme.blue
+            border = "rgba(59, 130, 246, 0.22)"
         else:
-            text = "Не хватает"
+            text = "Установить"
             bg = "rgba(239, 68, 68, 0.12)"
             fg = self.theme.red
             border = "rgba(239, 68, 68, 0.24)"
@@ -6443,10 +6664,16 @@ class SetupStatusRow(QFrame):
     def set_state(self, ready: bool, detail: str, state_kind: str = "missing") -> None:
         self.detail_label.setText(detail)
         self.update_badge(ready, state_kind)
+        show_install = bool(self.install_key) and (not ready) and state_kind == "missing"
+        self.install_button.setVisible(show_install)
+        self.install_button.setEnabled(show_install and self.install_enabled)
+        self.badge.setVisible(not show_install)
         if ready:
             self.clear_progress()
 
     def set_progress(self, percent: int | None, meta_text: str = "") -> None:
+        self.install_button.hide()
+        self.badge.show()
         if percent is None:
             self.progress.setRange(0, 0)
         else:
@@ -6737,6 +6964,8 @@ class ComfySetupPage(QWidget):
     install_requested = Signal(str)
     pause_requested = Signal(str)
     cancel_requested = Signal(str)
+    model_choices_changed = Signal(object)
+    model_install_requested = Signal(str)
     back_requested = Signal()
 
     def __init__(self, theme: Theme, status: dict, parent: QWidget | None = None):
@@ -6744,6 +6973,8 @@ class ComfySetupPage(QWidget):
         self.theme = theme
         self.status = status
         self.status_rows: dict[str, SetupStatusRow] = {}
+        self.model_choice_checks: dict[str, QCheckBox] = {}
+        self.syncing_model_choices = False
         self.active_scope = ""
         self.install_target_path = ""
 
@@ -6817,6 +7048,33 @@ class ComfySetupPage(QWidget):
         manual_layout.addWidget(self.manual_download_button, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.manual_card.hide()
 
+        self.model_choice_card = QFrame()
+        self.model_choice_card.setObjectName("setupModelChoiceCard")
+        model_choice_layout = QVBoxLayout(self.model_choice_card)
+        model_choice_layout.setContentsMargins(16, 14, 16, 14)
+        model_choice_layout.setSpacing(10)
+        self.model_choice_title = QLabel("Выбор моделей")
+        self.model_choice_title.setObjectName("setupModelChoiceTitle")
+        self.model_choice_hint = QLabel(
+            "mopMixtureOfPerverts v20 и xxxRay DMD2 - слабые модели. "
+            "Nova Anime XL IL v170 - средняя. Intorealism ZIT v40 и RedCraft ErnieRedmix - тяжелые; "
+            "ставь их только если хватает места на диске и VRAM."
+        )
+        self.model_choice_hint.setObjectName("setupModelChoiceHint")
+        self.model_choice_hint.setWordWrap(True)
+        model_choice_layout.addWidget(self.model_choice_title)
+        model_choice_layout.addWidget(self.model_choice_hint)
+        selected_choices = set(normalize_selected_model_choices(status.get("selected_model_choices")))
+        for choice in MODEL_CHOICE_SPECS:
+            key = str(choice["key"])
+            checkbox = QCheckBox(f"{choice['title']} - {choice['weight']}")
+            checkbox.setObjectName("setupModelChoiceCheck")
+            checkbox.setCursor(Qt.PointingHandCursor)
+            checkbox.setChecked(key in selected_choices)
+            checkbox.toggled.connect(self.on_model_choice_toggled)
+            self.model_choice_checks[key] = checkbox
+            model_choice_layout.addWidget(checkbox)
+
         self.comfy_section = SetupSectionCard("comfy", "Comfy", "Установить Comfy", theme)
         self.nodes_section = SetupSectionCard("nodes", "Ноды", "Установить ноды", theme)
         self.comfy_section.action_requested.connect(self.install_requested.emit)
@@ -6836,6 +7094,9 @@ class ComfySetupPage(QWidget):
             key = f"model:{model['title']}"
             row = SetupStatusRow(model["title"], theme)
             row.set_link(str(model.get("url", "")))
+            row.set_copy_fields(str(model.get("filename", "")), str(model.get("path", "")))
+            row.set_install_action(str(model.get("title", "")))
+            row.install_requested.connect(self.model_install_requested.emit)
             self.status_rows[key] = row
             self.comfy_section.add_row(row)
         for node in status.get("nodes", []):
@@ -6845,6 +7106,7 @@ class ComfySetupPage(QWidget):
             self.status_rows[key] = row
             self.nodes_section.add_row(row)
 
+        content_layout.addWidget(self.model_choice_card)
         content_layout.addWidget(self.comfy_section)
         content_layout.addWidget(self.nodes_section)
         content_layout.addStretch(1)
@@ -6900,12 +7162,57 @@ class ComfySetupPage(QWidget):
             QPushButton#setupManualButton:hover {{
                 background: {self.theme.soft_btn_hover};
             }}
+            QFrame#setupModelChoiceCard {{
+                background: {self.theme.panel_bg};
+                border: 1px solid {self.theme.border};
+                border-radius: 20px;
+            }}
+            QLabel#setupModelChoiceTitle {{
+                color: {self.theme.text};
+                font-size: 14px;
+                font-weight: 800;
+                background: transparent;
+            }}
+            QLabel#setupModelChoiceHint {{
+                color: {self.theme.muted};
+                font-size: 12px;
+                background: transparent;
+            }}
+            QCheckBox#setupModelChoiceCheck {{
+                color: {self.theme.text};
+                font-size: 13px;
+                font-weight: 700;
+                spacing: 8px;
+                background: transparent;
+            }}
+            QCheckBox#setupModelChoiceCheck::indicator {{
+                width: 18px;
+                height: 18px;
+            }}
             """
         )
         self.comfy_section.apply_theme(self.theme)
         self.nodes_section.apply_theme(self.theme)
         for row in self.status_rows.values():
             row.apply_theme(self.theme)
+
+    def selected_model_choice_values(self) -> list[str]:
+        return [key for key in normalize_selected_model_choices(list(self.model_choice_checks.keys())) if self.model_choice_checks[key].isChecked()]
+
+    def on_model_choice_toggled(self, _checked: bool) -> None:
+        if self.syncing_model_choices:
+            return
+        self.model_choices_changed.emit(self.selected_model_choice_values())
+
+    def refresh_model_choices(self, status: dict) -> None:
+        selected = set(normalize_selected_model_choices(status.get("selected_model_choices")))
+        self.syncing_model_choices = True
+        try:
+            for key, checkbox in self.model_choice_checks.items():
+                checkbox.setChecked(key in selected)
+                checkbox.setEnabled(not bool(self.active_scope))
+        finally:
+            self.syncing_model_choices = False
 
     def open_manual_comfy_download(self) -> None:
         url = str(self.status.get("source_url", "") or COMFYUI_PORTABLE_URL)
@@ -6919,6 +7226,7 @@ class ComfySetupPage(QWidget):
 
     def refresh_status(self, status: dict) -> None:
         self.status = status
+        self.refresh_model_choices(status)
         comfy_ready = bool(status.get("comfy_ready"))
         manager_ready = bool(status.get("manager_ready"))
         root_text = str(status.get("root", "") or "").strip()
@@ -6945,8 +7253,15 @@ class ComfySetupPage(QWidget):
             if not row:
                 continue
             row.set_link(str(model.get("url", "")))
+            row.set_copy_fields(str(model.get("filename", "")), str(model.get("path", "")))
+            row.set_install_enabled(comfy_ready and not bool(self.active_scope))
             if model.get("ready"):
                 row.set_state(True, "Файл уже на месте.", "ready")
+            elif model.get("skipped"):
+                choice_text = str(model.get("choice_label") or model.get("title") or "model")
+                weight_text = str(model.get("choice_weight") or "").strip()
+                detail = f"Пропущено по выбору: {choice_text}" + (f" - {weight_text}." if weight_text else ".")
+                row.set_state(False, detail, "skipped")
             elif not model.get("download_checked", False):
                 row.set_state(False, "Проверяем, доступна ли прямая ссылка на скачивание.", "missing")
             elif not model.get("download_available", True):
@@ -6977,14 +7292,15 @@ class ComfySetupPage(QWidget):
             self.nodes_section.set_summary("Сначала поставь Comfy, потом можно добавлять ноды.")
         else:
             self.nodes_section.set_summary("Все ноды уже на месте." if nodes_missing == 0 else f"Нужно доставить нод: {nodes_missing}.")
-        if self.active_scope == "comfy":
+        comfy_busy = self.active_scope == "comfy" or self.active_scope.startswith("model")
+        if comfy_busy:
             self.comfy_section.set_action_state("Установка...", False, True)
         else:
             update_available = bool(comfy_ready and status.get("comfy_update_available"))
             comfy_action = "Обновить Comfy" if update_available and comfy_missing == 0 else "Установить Comfy"
             self.comfy_section.set_action_state(
                 comfy_action if (comfy_missing or update_available) else "Все установлено",
-                (comfy_missing > 0 or update_available) and self.active_scope != "nodes",
+                (comfy_missing > 0 or update_available) and self.active_scope != "nodes" and not self.active_scope.startswith("model"),
                 False,
             )
         if self.active_scope == "nodes":
@@ -6992,10 +7308,10 @@ class ComfySetupPage(QWidget):
         else:
             self.nodes_section.set_action_state(
                 "Установить ноды" if nodes_missing else "Все установлено",
-                comfy_ready and nodes_missing > 0 and self.active_scope != "comfy",
+                comfy_ready and nodes_missing > 0 and not comfy_busy,
                 False,
             )
-        if self.active_scope != "comfy":
+        if not comfy_busy:
             self.comfy_section.clear_progress()
         if self.active_scope != "nodes":
             self.nodes_section.clear_progress()
@@ -7006,9 +7322,12 @@ class ComfySetupPage(QWidget):
         if not root_text:
             self.folder_label.setText(f"Папка установки: {self.install_target_path}" if self.install_target_path else "Папка пока не выбрана")
 
+    def section_for_scope(self, scope: str) -> SetupSectionCard:
+        return self.nodes_section if scope == "nodes" else self.comfy_section
+
     def begin_install(self, scope: str, eta_text: str) -> None:
         self.active_scope = scope
-        target = self.comfy_section if scope == "comfy" else self.nodes_section
+        target = self.section_for_scope(scope)
         target.set_progress(0, "Подготавливаем установку.", f"Примерное время: {eta_text}", True)
         target.set_paused(False)
         target.set_action_state("Установка...", False, True)
@@ -7021,7 +7340,7 @@ class ComfySetupPage(QWidget):
             self.nodes_section.set_paused(paused)
 
     def update_install_progress(self, scope: str, detail: str, percent: int, meta: str = "") -> None:
-        target = self.comfy_section if scope == "comfy" else self.nodes_section
+        target = self.section_for_scope(scope)
         payload = parse_setup_progress_meta(meta)
         row_key = str(payload.get("row_key", "") or "")
         row_meta = str(payload.get("meta_text", "") or meta)
@@ -7043,7 +7362,7 @@ class ComfySetupPage(QWidget):
         target.set_progress(percent, detail, row_meta or meta, True)
 
     def finish_install(self, scope: str, message: str, is_error: bool) -> None:
-        target = self.comfy_section if scope == "comfy" else self.nodes_section
+        target = self.section_for_scope(scope)
         self.active_scope = ""
         target.set_progress(0 if is_error else 100, message, "Установка остановилась с ошибкой." if is_error else "Готово.", True)
         self.clear_row_progress()
@@ -7478,6 +7797,8 @@ class MainWindow(QWidget):
         self.setup_page.install_requested.connect(self.start_setup_install)
         self.setup_page.pause_requested.connect(self.toggle_setup_install_pause)
         self.setup_page.cancel_requested.connect(self.cancel_setup_install)
+        self.setup_page.model_choices_changed.connect(self.on_setup_model_choices_changed)
+        self.setup_page.model_install_requested.connect(self.start_single_model_install)
         self.setup_page.back_requested.connect(lambda: self.set_setup_view_open(False))
         self.page_stack.addWidget(self.setup_page)
 
@@ -9672,8 +9993,60 @@ class MainWindow(QWidget):
     def open_comfy_guide(self) -> None:
         self.set_setup_view_open(True)
 
+    def on_setup_model_choices_changed(self, choices: object) -> None:
+        if self.install_setup_inflight:
+            return
+        self.config["selected_model_choices"] = normalize_selected_model_choices(choices)
+        save_config(self.config)
+        status = cached_comfy_setup_status(self.config, force=True)
+        if self.setup_page_widget is not None:
+            self.setup_page_widget.refresh_status(status)
+        self.update_install_button()
+
     def start_comfy_setup_install(self) -> None:
         self.start_setup_install("comfy")
+
+    def start_single_model_install(self, model_title: str) -> None:
+        if self.busy or self.install_setup_inflight:
+            return
+        spec = starter_model_spec_by_title(model_title)
+        if not spec:
+            self.show_toast(f"Модель не найдена: {model_title}", True)
+            return
+        status = cached_comfy_setup_status(self.config, force=True)
+        if not status.get("comfy_ready"):
+            self.show_toast("Сначала установи Portable ComfyUI.", True)
+            return
+        root = current_comfy_root(self.config)
+        if root and starter_model_exists(root, spec):
+            if self.setup_page_widget is not None:
+                self.setup_page_widget.refresh_status(status)
+            self.show_toast(f"{spec['title']} уже установлена.")
+            return
+        reset_download_controls()
+        self.install_setup_inflight = True
+        self.install_setup_scope = "model"
+        self.install_setup_download_paused = False
+        self.install_setup_paused_poll = self.poll_timer.isActive()
+        if self.install_setup_paused_poll:
+            self.poll_timer.stop()
+        self.install_setup_eta = "зависит от размера файла"
+        self.install_setup_progress_percent = 0
+        self.install_setup_progress_detail = f"Ставим {spec['title']}."
+        self.install_setup_progress_meta = ""
+        self.install_setup_last_scope = "model"
+        self.install_setup_last_message = ""
+        self.install_setup_last_error = False
+        self.update_install_button()
+        if self.setup_page_widget is not None:
+            self.setup_page_widget.begin_install("model", self.install_setup_eta)
+        self.run_background(
+            lambda progress, title=spec["title"]: install_single_starter_model_setup(title, progress),
+            job_kind="installsetup:model",
+            set_busy=False,
+            show_toast=True,
+            with_progress=True,
+        )
 
     def toggle_setup_install_pause(self, _scope: str = "") -> None:
         if not self.install_setup_inflight:
