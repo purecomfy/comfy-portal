@@ -625,6 +625,18 @@ REQUIRED_NODE_SPECS = (
         "aliases": ["comfy-image-saver", "Image Saver", "FancyTimerNode", "Execution Timer"],
     },
     {
+        "title": "ComfyUI Image Saver",
+        "folder": "ComfyUI-Image-Saver",
+        "repo": "https://github.com/alexopus/ComfyUI-Image-Saver.git",
+        "aliases": ["ComfyUI-Image-Saver", "alexopus/ComfyUI-Image-Saver", "Image Saver"],
+    },
+    {
+        "title": "ComfyUI-FBCNN",
+        "folder": "ComfyUI-FBCNN",
+        "repo": "https://github.com/Miosp/ComfyUI-FBCNN.git",
+        "aliases": ["ComfyUI-FBCNN", "FBCNN", "Miosp/ComfyUI-FBCNN"],
+    },
+    {
         "title": "ComfyUI-GGUF",
         "cnr_id": "comfyui-gguf",
         "folder": "ComfyUI-GGUF",

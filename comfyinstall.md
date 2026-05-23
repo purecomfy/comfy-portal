@@ -271,6 +271,8 @@ CUSTOM_NODES=(
   "ComfyUI DepthAnythingV2|ComfyUI-DepthAnythingV2|https://github.com/kijai/ComfyUI-DepthAnythingV2.git"
   "ComfyUI Mira|ComfyUI_Mira|https://github.com/mirabarukaso/ComfyUI_Mira.git"
   "Comfy Image Saver|comfy-image-saver|https://github.com/giriss/comfy-image-saver.git"
+  "ComfyUI Image Saver|ComfyUI-Image-Saver|https://github.com/alexopus/ComfyUI-Image-Saver.git"
+  "ComfyUI-FBCNN|ComfyUI-FBCNN|https://github.com/Miosp/ComfyUI-FBCNN.git"
   "ComfyUI-GGUF|ComfyUI-GGUF|https://github.com/city96/ComfyUI-GGUF.git"
   "ComfyUI-iTools|comfyui-itools|https://github.com/MohammadAboulEla/ComfyUI-iTools.git"
   "ControlAltAI-Nodes|controlaltai-nodes|https://github.com/gseth/ControlAltAI-Nodes.git"
