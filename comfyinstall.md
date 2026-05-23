@@ -87,7 +87,7 @@ ss -ltnp 2>/dev/null | grep ":${COMFY_PORT} " || true
 ```bash
 sudo apt update
 sudo apt install -y \
-  git curl wget aria2 ffmpeg \
+  git curl wget aria2 ffmpeg sox \
   python3 python3-venv python3-pip \
   build-essential pkg-config \
   libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
@@ -98,7 +98,7 @@ sudo apt install -y \
 
 ```bash
 sudo dnf install -y \
-  git curl wget aria2 ffmpeg \
+  git curl wget aria2 ffmpeg sox \
   python3 python3-pip \
   gcc gcc-c++ make pkgconf-pkg-config \
   mesa-libGL glib2 \
@@ -109,13 +109,13 @@ sudo dnf install -y \
 
 ```bash
 sudo pacman -Syu --needed \
-  git curl wget aria2 ffmpeg \
+  git curl wget aria2 ffmpeg sox \
   python python-pip \
   base-devel pkgconf \
   nodejs npm
 ```
 
-Если пакетный менеджер неизвестен, не угадывай. Выведи список нужных пакетов: `git`, `curl`, `wget`, `aria2`, `ffmpeg`, `python3`, `python3-venv`, `python3-pip`, build tools, OpenGL libs, `nodejs`, `npm`.
+Если пакетный менеджер неизвестен, не угадывай. Выведи список нужных пакетов: `git`, `curl`, `wget`, `aria2`, `ffmpeg`, `sox`, `python3`, `python3-venv`, `python3-pip`, build tools, OpenGL libs, `nodejs`, `npm`.
 
 ## Этап 3. Установка ComfyUI
 
@@ -133,6 +133,7 @@ fi
 python3 -m venv "$VENV_DIR"
 . "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip setuptools wheel
+python -m pip install uv==0.9.7
 ```
 
 ## Этап 4. PyTorch
@@ -177,7 +178,38 @@ PY
 
 ```bash
 cd "$COMFY_DIR"
-python -m pip install -r requirements.txt
+python -m uv pip install -r requirements.txt
+python -m uv pip install \
+  scikit-build-core \
+  onnx \
+  av==16.0.1 \
+  stringzilla==3.12.6 \
+  transformers==4.57.6 \
+  descript-audio-codec \
+  pylatexenc \
+  python-ffmpeg
+
+if [ "$COMFY_DEVICE_MODE" = "cuda" ]; then
+  python -m uv pip install onnxruntime-gpu
+  TRITON_VER="$(python - <<'PY'
+import importlib.metadata
+try:
+    meta = importlib.metadata.metadata("torch")
+    reqs = meta.get_all("Requires-Dist") or []
+    for req in reqs:
+        if req.startswith("triton") and "==" in req:
+            print(req.split("==", 1)[1].split(";", 1)[0].strip())
+            break
+except Exception:
+    pass
+PY
+)"
+  if [ -n "$TRITON_VER" ]; then
+    python -m pip install --upgrade --force-reinstall "triton==$TRITON_VER" || true
+  fi
+else
+  python -m uv pip install onnxruntime
+fi
 ```
 
 ## Этап 5. ComfyUI Manager
@@ -193,7 +225,7 @@ else
 fi
 
 if [ -f "ComfyUI-Manager/requirements.txt" ]; then
-  "$VENV_DIR/bin/python" -m pip install -r "ComfyUI-Manager/requirements.txt" || true
+  "$VENV_DIR/bin/python" -m uv pip install -r "ComfyUI-Manager/requirements.txt" || true
 fi
 ```
 
@@ -240,6 +272,19 @@ CUSTOM_NODES=(
   "ComfyUI Mira|ComfyUI_Mira|https://github.com/mirabarukaso/ComfyUI_Mira.git"
   "Comfy Image Saver|comfy-image-saver|https://github.com/giriss/comfy-image-saver.git"
   "ComfyUI-GGUF|ComfyUI-GGUF|https://github.com/city96/ComfyUI-GGUF.git"
+  "ComfyUI-iTools|comfyui-itools|https://github.com/MohammadAboulEla/ComfyUI-iTools.git"
+  "ControlAltAI-Nodes|controlaltai-nodes|https://github.com/gseth/ControlAltAI-Nodes.git"
+  "ComfyUI-Inpaint-CropAndStitch|comfyui-inpaint-cropandstitch|https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git"
+  "ComfyUI-VideoHelperSuite|comfyui-videohelpersuite|https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git"
+  "ComfyUI-TiledDiffusion|ComfyUI-TiledDiffusion|https://github.com/shiimizu/ComfyUI-TiledDiffusion.git"
+  "ComfyUI-WanVideoWrapper|ComfyUI-WanVideoWrapper|https://github.com/kijai/ComfyUI-WanVideoWrapper.git"
+  "ComfyUI-WanAnimatePreprocess|ComfyUI-WanAnimatePreprocess|https://github.com/kijai/ComfyUI-WanAnimatePreprocess.git"
+  "ComfyUI-Easy-Sam3|comfyui-easy-sam3|https://github.com/yolain/ComfyUI-Easy-Sam3.git"
+  "ComfyUI-SCAIL-Pose|ComfyUI-SCAIL-Pose|https://github.com/kijai/ComfyUI-SCAIL-Pose.git"
+  "ComfyUI-MelBandRoFormer|ComfyUI-MelBandRoFormer|https://github.com/kijai/ComfyUI-MelBandRoFormer.git"
+  "ComfyUI-Qwen-TTS|qwen3-tts-comfyui|https://github.com/flybirdxx/ComfyUI-Qwen-TTS.git"
+  "ComfyUI-FishAudioS2|ComfyUI-fish-audio-s2|https://github.com/Saganaki22/ComfyUI-FishAudioS2.git"
+  "ComfyUI-Pixaroma|ComfyUI-Pixaroma|https://github.com/pixaroma/ComfyUI-Pixaroma.git"
 )
 
 mkdir -p "$COMFY_DIR/custom_nodes"
@@ -262,11 +307,37 @@ for item in "${CUSTOM_NODES[@]}"; do
   fi
 
   if [ -f "$target/requirements.txt" ]; then
-    "$VENV_DIR/bin/python" -m pip install -r "$target/requirements.txt" || { NODE_FAIL+=("$title: requirements failed"); node_failed=1; }
+    "$VENV_DIR/bin/python" -m uv pip install -r "$target/requirements.txt" || { NODE_FAIL+=("$title: requirements failed"); node_failed=1; }
   fi
 
   [ "$node_failed" -eq 0 ] && [ -d "$target" ] && NODE_OK+=("$title")
 done
+```
+
+Если у пользователя уже есть внешняя папка моделей, не копируй и не перекачивай ее. Создай `extra_model_paths.yaml`, чтобы ComfyUI видел эту папку:
+
+```bash
+read -r -p "Путь к существующей папке models, если она есть. Enter = пропустить: " EXISTING_MODELS_DIR
+if [ -n "${EXISTING_MODELS_DIR:-}" ] && [ -d "$EXISTING_MODELS_DIR" ]; then
+  cat > "$COMFY_DIR/extra_model_paths.yaml" <<EOF
+comfyui:
+  base_path: "$EXISTING_MODELS_DIR"
+  is_default: true
+  checkpoints: checkpoints
+  clip: clip
+  clip_vision: clip_vision
+  configs: configs
+  controlnet: controlnet
+  diffusion_models: diffusion_models
+  embeddings: embeddings
+  loras: loras
+  text_encoders: text_encoders
+  unet: unet
+  upscale_models: upscale_models
+  vae: vae
+EOF
+  echo "extra_model_paths.yaml создан: $COMFY_DIR/extra_model_paths.yaml"
+fi
 ```
 
 ## Этап 7. Модели
@@ -284,12 +355,13 @@ done
 ```bash
 echo "== Model choice =="
 echo "mopMixtureOfPerverts v20, xxxRay DMD2 - слабые: выбирай для слабой GPU или если нужно меньше места."
-echo "Nova Anime XL IL v170 - средняя: хороший вариант по умолчанию."
+echo "WAI-illustrious-SDXL - средняя: хороший вариант по умолчанию."
 echo "Intorealism ZIT v40, RedCraft ErnieRedmix - тяжелые: выбирай только если хватает места и VRAM."
-echo "Оставь пусто для рекомендации: mopofmixture,xxray,novaanime."
-read -r -p "Какие модели скачать? [mopofmixture,xxray,novaanime]: " MODEL_SELECTION
-MODEL_SELECTION="${MODEL_SELECTION:-mopofmixture,xxray,novaanime}"
+echo "Оставь пусто для рекомендации: mopofmixture,xxray,waiill."
+read -r -p "Какие модели скачать? [mopofmixture,xxray,waiill]: " MODEL_SELECTION
+MODEL_SELECTION="${MODEL_SELECTION:-mopofmixture,xxray,waiill}"
 MODEL_SELECTION="$(printf '%s' "$MODEL_SELECTION" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+MODEL_SELECTION="$(printf '%s' "$MODEL_SELECTION" | sed 's/novaanime/waiill/g')"
 
 model_selected() {
   group="$1"
@@ -307,16 +379,18 @@ MODELS=(
   "VAE|ae.safetensors|ComfyUI/models/vae|https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/vae/ae.safetensors?download=true|always"
   "CLIP / text_encoders|qwen_3_4b.safetensors|ComfyUI/models/text_encoders|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors?download=true|always"
   "ControlNet Union|Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors|ComfyUI/models/model_patches|https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors?download=true|always"
-  "Embeddings|embedding_model.pt|ComfyUI/models/embeddings|https://civitai.com/api/download/models/2121199?type=Model&format=Other|always"
+  "lazypos|lazypos.safetensors|ComfyUI/models/embeddings|https://civitai.red/api/download/models/1833157?fileId=1733353|always|https://raw.githubusercontent.com/mofko/MofkoModules/main/assets/lazypos.safetensors"
+  "lazyneg|lazyneg.safetensors|ComfyUI/models/embeddings|https://civitai.red/api/download/models/2121199?fileId=1733353|always|https://raw.githubusercontent.com/mofko/MofkoModules/main/assets/lazyneg.safetensors"
   "Upscale 4x_NMKD-Siax_200k|4x_NMKD-Siax_200k.pth|ComfyUI/models/upscale_models|https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth?download=true|always"
   "mopMixtureOfPerverts v20|mopMixtureOfPerverts_v20.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2159501?type=Model&format=SafeTensor&size=pruned&fp=fp16|mopofmixture"
   "xxxRay DMD2|xxxRay_dmd2.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/1624818?type=Model&format=SafeTensor&size=full&fp=fp16|xxray"
-  "Nova Anime XL IL v170|novaAnimeXL_ilV170.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2741698?type=Model&format=SafeTensor&size=pruned&fp=fp16|novaanime"
+  "WAI-illustrious-SDXL|WAI-illustrious-SDXL.safetensors|ComfyUI/models/checkpoints|https://civitai.red/api/download/models/2883731?type=Model&format=SafeTensor&size=pruned&fp=fp16|waiill"
   "Intorealism ZIT v40|intorealism_zitV40.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2912231?type=Model&format=SafeTensor&size=full&fp=fp8|intorealism"
   "RedCraft ErnieRedmix UNet|redcraft_ernieRedmix.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2891710?type=Diffusion%20Model&format=Other&fp=fp8|redcraft"
   "RedCraft ErnieRedmix Text Encoder|redcraft_ernieRedmix_txt.safetensors|ComfyUI/models/text_encoders|https://civitai.red/api/download/models/2891710?fileId=2773413|redcraft"
   "Flux2 Tiny VAE|flux2-tiny-vae.safetensors|ComfyUI/models/vae|https://civitai.red/api/download/models/2891710?fileId=2773335|redcraft"
   "bbox/face_yolov8m.pt|face_yolov8m.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/alexgenovese/ultralytics/resolve/main/bbox/face_yolov8m.pt?download=true|always"
+  "bbox/face_yolov9c.pt|face_yolov9c.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov9c.pt|always"
   "bbox/Eyeful_v2-Paired.pt|Eyeful_v2-Paired.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/MidnightRunner/Ultralytics/resolve/main/bbox/Eyeful_v2-Paired.pt?download=true|always"
   "bbox/hand_yolov9c.pt|hand_yolov9c.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/Bingsu/adetailer/resolve/main/hand_yolov9c.pt?download=true|always"
 )
@@ -326,11 +400,12 @@ download_model() {
   filename="$2"
   rel_dir="$3"
   url="$4"
+  fallback_url="${5:-}"
   target_dir="$COMFY_BASE/$rel_dir"
   target="$target_dir/$filename"
   mkdir -p "$target_dir"
 
-  if [ -s "$target" ] && [ "$(stat -c%s "$target" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+  if [ -s "$target" ] && [ "$(stat -c%s "$target" 2>/dev/null || echo 0)" -gt 1024 ]; then
     echo "Already exists: $target"
     return 0
   fi
@@ -340,7 +415,7 @@ download_model() {
 
   is_valid_download() {
     [ -s "$tmp" ] || return 1
-    [ "$(stat -c%s "$tmp" 2>/dev/null || echo 0)" -gt 1048576 ] || return 1
+    [ "$(stat -c%s "$tmp" 2>/dev/null || echo 0)" -gt 1024 ] || return 1
     ! head -c 256 "$tmp" | grep -Eqi '<html|<!doctype|captcha|unauthorized|forbidden'
   }
 
@@ -396,8 +471,17 @@ download_model() {
   fi
 
   if [ "$downloaded_ok" -ne 1 ]; then
-    mark_manual_download
-    return 1
+    if [ -n "$fallback_url" ]; then
+      echo "Primary download failed. Trying fallback: $title"
+      rm -f "$tmp"
+      if try_download "$fallback_url" "" && is_valid_download; then
+        downloaded_ok=1
+      fi
+    fi
+    if [ "$downloaded_ok" -ne 1 ]; then
+      mark_manual_download
+      return 1
+    fi
   fi
 
   mv "$tmp" "$target"
@@ -410,12 +494,12 @@ MODEL_OK=()
 MODEL_FAIL=()
 
 for item in "${MODELS[@]}"; do
-  IFS='|' read -r title filename rel_dir url model_group <<< "$item"
+  IFS='|' read -r title filename rel_dir url model_group fallback_url <<< "$item"
   if ! model_selected "${model_group:-always}"; then
     echo "Skipped by model choice: $title"
     continue
   fi
-  if download_model "$title" "$filename" "$rel_dir" "$url"; then
+  if download_model "$title" "$filename" "$rel_dir" "$url" "$fallback_url"; then
     MODEL_OK+=("$title")
   else
     MODEL_FAIL+=("$title")
@@ -508,35 +592,130 @@ done
 
 ## Этап 10. Туннель LocalTunnel
 
-LocalTunnel дает ссылку `loca.lt`. Можно указать свой subdomain, но он может быть занят или вести не туда. Всегда проверяй `PUBLIC_URL/system_stats`.
+LocalTunnel дает ссылку `loca.lt`. На этом этапе агент обязан не просто показать команду, а реально поднять и проверить туннель:
 
-Установка:
+1. сначала случайную ссылку без `--subdomain`;
+2. потом ссылку с subdomain;
+3. обе ссылки проверить через `PUBLIC_URL/system_stats`;
+4. рабочую ссылку оставить запущенной и добавить в итоговый отчет.
+
+Если проверка возвращает HTML, чужую страницу, password page, 404/502 или не-JSON, это не рабочий туннель.
 
 ```bash
 sudo npm install -g localtunnel
+
+mkdir -p "$COMFY_BASE/logs"
+
+if ! curl -fsS "http://127.0.0.1:$COMFY_PORT/system_stats" >/dev/null 2>&1; then
+  echo "ComfyUI API is not ready on http://127.0.0.1:$COMFY_PORT; start/fix ComfyUI before tunnel."
+  exit 1
+fi
+
+extract_loca_url() {
+  grep -Eo 'https://[A-Za-z0-9.-]+\.loca\.lt' "$1" | tail -n 1
+}
+
+wait_loca_url() {
+  log_file="$1"
+  for i in $(seq 1 45); do
+    url="$(extract_loca_url "$log_file" || true)"
+    if [ -n "$url" ]; then
+      printf '%s\n' "$url"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+check_public_comfy() {
+  public_url="${1%/}"
+  check_body="$COMFY_BASE/logs/tunnel_check_body.txt"
+  check_err="$COMFY_BASE/logs/tunnel_check_error.txt"
+  rm -f "$check_body" "$check_err"
+  if ! curl -fsS --max-time 20 "$public_url/system_stats" -o "$check_body" 2>"$check_err"; then
+    echo "FAIL $public_url/system_stats"
+    cat "$check_err" 2>/dev/null || true
+    return 1
+  fi
+  if grep -qiE '"system"|"devices"|system_stats|devices' "$check_body"; then
+    echo "OK   $public_url/system_stats"
+    head -c 500 "$check_body" && echo
+    return 0
+  fi
+  echo "FAIL $public_url/system_stats returned non-Comfy response:"
+  head -c 500 "$check_body" && echo
+  return 1
+}
+
+start_localtunnel() {
+  label="$1"
+  subdomain="${2:-}"
+  log_file="$COMFY_BASE/logs/localtunnel_${label}.log"
+  pid_file="$COMFY_BASE/localtunnel_${label}.pid"
+  rm -f "$log_file" "$pid_file"
+  if [ -n "$subdomain" ]; then
+    nohup lt --port "$COMFY_PORT" --local-host 127.0.0.1 --subdomain "$subdomain" > "$log_file" 2>&1 &
+  else
+    nohup lt --port "$COMFY_PORT" --local-host 127.0.0.1 > "$log_file" 2>&1 &
+  fi
+  tunnel_pid=$!
+  echo "$tunnel_pid" > "$pid_file"
+  public_url="$(wait_loca_url "$log_file" || true)"
+  if [ -z "$public_url" ]; then
+    echo "LocalTunnel did not print URL for $label. Log:" >&2
+    tail -n 80 "$log_file" >&2 2>/dev/null || true
+    return 1
+  fi
+  echo "$public_url" > "$COMFY_BASE/localtunnel_${label}.url"
+  echo "$public_url"
+}
+
+stop_localtunnel_label() {
+  label="$1"
+  pid_file="$COMFY_BASE/localtunnel_${label}.pid"
+  if [ -f "$pid_file" ]; then
+    kill "$(cat "$pid_file")" 2>/dev/null || true
+    rm -f "$pid_file"
+  fi
+}
+
+echo "== LocalTunnel random URL test =="
+RANDOM_TUNNEL_URL="$(start_localtunnel random "")" || exit 1
+if check_public_comfy "$RANDOM_TUNNEL_URL"; then
+  RANDOM_TUNNEL_OK=1
+else
+  RANDOM_TUNNEL_OK=0
+fi
+
+stop_localtunnel_label random
+
+SUBDOMAIN="${SUBDOMAIN:-}"
+if [ -z "$SUBDOMAIN" ]; then
+  read -r -p "LocalTunnel subdomain for fixed URL [comfylocal$((1000 + RANDOM % 9000))]: " SUBDOMAIN
+  SUBDOMAIN="${SUBDOMAIN:-comfylocal$((1000 + RANDOM % 9000))}"
+fi
+SUBDOMAIN="$(printf '%s' "$SUBDOMAIN" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')"
+
+echo "== LocalTunnel subdomain test: $SUBDOMAIN =="
+FIXED_TUNNEL_URL="$(start_localtunnel fixed "$SUBDOMAIN" || true)"
+if [ -n "$FIXED_TUNNEL_URL" ] && check_public_comfy "$FIXED_TUNNEL_URL"; then
+  FIXED_TUNNEL_OK=1
+  PUBLIC_URL="$FIXED_TUNNEL_URL"
+  echo "$PUBLIC_URL" > "$COMFY_BASE/public_url.txt"
+else
+  FIXED_TUNNEL_OK=0
+  stop_localtunnel_label fixed
+  echo "Subdomain tunnel failed. Falling back to a fresh random LocalTunnel URL."
+  RANDOM_TUNNEL_URL="$(start_localtunnel random "")" || exit 1
+  check_public_comfy "$RANDOM_TUNNEL_URL" || exit 1
+  RANDOM_TUNNEL_OK=1
+  PUBLIC_URL="$RANDOM_TUNNEL_URL"
+  echo "$PUBLIC_URL" > "$COMFY_BASE/public_url.txt"
+fi
+
+echo "Working public URL: $PUBLIC_URL"
 ```
-
-Запуск со случайной ссылкой:
-
-```bash
-lt --port "$COMFY_PORT" --local-host 127.0.0.1
-```
-
-Запуск со своим именем:
-
-```bash
-SUBDOMAIN="${SUBDOMAIN:-comfylocal$((1000 + RANDOM % 9000))}"
-lt --port "$COMFY_PORT" --local-host 127.0.0.1 --subdomain "$SUBDOMAIN"
-```
-
-Проверка:
-
-```bash
-PUBLIC_URL="https://example.loca.lt"
-curl -fsS "$PUBLIC_URL/system_stats" | head -c 500 && echo
-```
-
-Если открывается чужая HTML-страница, это не рабочий туннель. Смени subdomain или используй случайную ссылку.
 
 ## Этап 11. One-click Скрипты
 
@@ -619,6 +798,9 @@ echo "Port:       $COMFY_PORT"
 echo "Mode:       ${COMFY_DEVICE_MODE:-unknown}"
 echo
 echo "Local URL:  http://127.0.0.1:$COMFY_PORT"
+echo "Public URL: $(cat "$COMFY_BASE/public_url.txt" 2>/dev/null || echo "not created")"
+echo "Random tunnel:   ${RANDOM_TUNNEL_URL:-not tested} / ok=${RANDOM_TUNNEL_OK:-0}"
+echo "Subdomain tunnel:${FIXED_TUNNEL_URL:-not tested} / ok=${FIXED_TUNNEL_OK:-0}"
 echo
 echo "Scripts:"
 ls -1 "$COMFY_BASE"/start_comfy_*.sh "$COMFY_BASE"/stop_comfy.sh 2>/dev/null || true
@@ -635,4 +817,6 @@ fi
 
 - Для LocalTunnel: запускать `~/Comfy/start_comfy_localtunnel.sh`.
 - Для остановки: запускать `~/Comfy/stop_comfy.sh`.
+- Основная публичная ссылка лежит в `~/Comfy/public_url.txt`.
 - Если нужен свой адрес, используй LocalTunnel subdomain и обязательно проверяй `PUBLIC_URL/system_stats`.
+- Для полной внешней проверки используй `ctprobe PUBLIC_URL`; в отчете отдельно напиши результат `ping`, `ws` и `gen`.
