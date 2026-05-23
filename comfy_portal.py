@@ -2442,7 +2442,7 @@ def collect_node_states(root: Path | None) -> list[dict]:
         states.append(
             {
                 "title": spec["title"],
-                "cnr_id": spec["cnr_id"],
+                "cnr_id": spec.get("cnr_id", ""),
                 "folder": spec["folder"],
                 "repo": spec["repo"],
                 "path": str(target) if target else "",
