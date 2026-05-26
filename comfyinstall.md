@@ -368,9 +368,10 @@ echo "== Model choice =="
 echo "mopMixtureOfPerverts v20, xxxRay DMD2 - слабые: выбирай для слабой GPU или если нужно меньше места."
 echo "WAI-illustrious-SDXL - средняя: хороший вариант по умолчанию."
 echo "Intorealism ZIT v40, RedCraft ErnieRedmix - тяжелые: выбирай только если хватает места и VRAM."
-echo "Оставь пусто для рекомендации: mopofmixture,xxray,waiill."
-read -r -p "Какие модели скачать? [mopofmixture,xxray,waiill]: " MODEL_SELECTION
-MODEL_SELECTION="${MODEL_SELECTION:-mopofmixture,xxray,waiill}"
+echo "MiaoMiao Harem Anima Base - средняя: UNet + text encoder + VAE."
+echo "Оставь пусто для рекомендации: mopofmixture,xxray,waiill,miaomiao."
+read -r -p "Какие модели скачать? [mopofmixture,xxray,waiill,miaomiao]: " MODEL_SELECTION
+MODEL_SELECTION="${MODEL_SELECTION:-mopofmixture,xxray,waiill,miaomiao}"
 MODEL_SELECTION="$(printf '%s' "$MODEL_SELECTION" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
 MODEL_SELECTION="$(printf '%s' "$MODEL_SELECTION" | sed 's/novaanime/waiill/g')"
 
@@ -400,6 +401,9 @@ MODELS=(
   "RedCraft ErnieRedmix UNet|redcraft_ernieRedmix.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2891710?type=Diffusion%20Model&format=Other&fp=fp8|redcraft"
   "RedCraft ErnieRedmix Text Encoder|redcraft_ernieRedmix_txt.safetensors|ComfyUI/models/text_encoders|https://civitai.red/api/download/models/2891710?fileId=2773413|redcraft"
   "Flux2 Tiny VAE|flux2-tiny-vae.safetensors|ComfyUI/models/vae|https://civitai.red/api/download/models/2891710?fileId=2773335|redcraft"
+  "MiaoMiao Harem Anima Base UNet|miaomiaoHarem_animaBase.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2967371?fileId=2846844|miaomiao"
+  "MiaoMiao Harem Anima Base Text Encoder|anima_baseV10_txt.safetensors|ComfyUI/models/text_encoders|https://civitai.red/api/download/models/2967371?fileId=2846833|miaomiao"
+  "MiaoMiao Harem Anima Base VAE|qwen_image_vae.safetensors|ComfyUI/models/vae|https://civitai.red/api/download/models/2967371?fileId=2846827|miaomiao"
   "bbox/face_yolov8m.pt|face_yolov8m.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/alexgenovese/ultralytics/resolve/main/bbox/face_yolov8m.pt?download=true|always"
   "bbox/face_yolov9c.pt|face_yolov9c.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov9c.pt|always"
   "bbox/Eyeful_v2-Paired.pt|Eyeful_v2-Paired.pt|ComfyUI/models/ultralytics/bbox|https://huggingface.co/MidnightRunner/Ultralytics/resolve/main/bbox/Eyeful_v2-Paired.pt?download=true|always"
