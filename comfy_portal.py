@@ -4661,6 +4661,65 @@ def wait_for_comfy_ready(port: int, timeout_seconds: float = 90.0, interval_seco
     return port_is_open(port) and comfy_http_ready(port)
 
 
+def local_comfy_request_json(port: int, path: str, timeout_seconds: float = 8.0) -> dict:
+    clean_path = "/" + str(path or "").lstrip("/")
+    url = f"http://127.0.0.1:{int(port)}{clean_path}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": DOWNLOAD_USER_AGENT,
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        status = int(getattr(response, "status", response.getcode()) or 200)
+        text = response.read().decode("utf-8", errors="replace")
+        if status != 200:
+            raise RuntimeError(f"HTTP {status}: {text[:400]}")
+        value = json.loads(text)
+        if not isinstance(value, dict):
+            raise RuntimeError("JSON response is not an object")
+        return value
+
+
+def local_comfy_data_ready(port: int) -> bool:
+    try:
+        local_comfy_request_json(port, "/system_stats", timeout_seconds=4.0)
+        local_comfy_request_json(port, "/object_info/EmptyImage", timeout_seconds=10.0)
+        local_comfy_request_json(port, "/object_info/SaveImage", timeout_seconds=10.0)
+        return True
+    except Exception:
+        return False
+
+
+def wait_for_comfy_data_ready(config: dict | None = None, timeout_seconds: float = 120.0, interval_seconds: float = 1.0) -> bool:
+    config = config or load_config()
+    port = int(config.get("port", 8188) or 8188)
+    root = current_comfy_root(config)
+    deadline = time.time() + timeout_seconds
+    logged_fetch_wait = False
+    logged_probe_wait = False
+    while time.time() < deadline:
+        if not port_is_open(port) or not comfy_http_ready(port, timeout_seconds=2.0):
+            time.sleep(interval_seconds)
+            continue
+        if comfy_registry_fetch_in_progress(root):
+            if not logged_fetch_wait:
+                write_portal_log("tunnel.wait_comfy_data", "FETCH ComfyRegistry Data is still running.", port=port, root=str(root or ""))
+                logged_fetch_wait = True
+            time.sleep(interval_seconds)
+            continue
+        if local_comfy_data_ready(port):
+            write_portal_log("tunnel.comfy_data_ready", port=port, root=str(root or ""))
+            return True
+        if not logged_probe_wait:
+            write_portal_log("tunnel.wait_comfy_data", "ComfyUI object_info is not ready yet.", port=port, root=str(root or ""))
+            logged_probe_wait = True
+        time.sleep(interval_seconds)
+    write_portal_log("tunnel.wait_comfy_data.timeout", port=port, root=str(root or ""))
+    return False
+
+
 def internet_is_available(force: bool = False) -> bool:
     now = time.monotonic()
     cache = INTERNET_STATUS_CACHE
@@ -5189,6 +5248,12 @@ def wait_for_public_tunnel_url(
             actual_url = detect_any_tunnel_url_from_logs(log_paths)
             actual_subdomain = extract_public_subdomain(actual_url)
             if actual_subdomain and actual_subdomain != requested_subdomain:
+                write_portal_log(
+                    "tunnel.subdomain.mismatch",
+                    requested=requested_subdomain,
+                    actual=actual_subdomain,
+                    url=actual_url,
+                )
                 return ""
         if not detected and use_expected_fallback:
             detected = expected_tunnel_url(subdomain)
@@ -5538,8 +5603,10 @@ def start_tunnel_if_needed() -> str:
         config = load_config()
         comfy_root = ensure_layout(config)
         state = load_state()
-        if not wait_for_comfy_ready(config["port"], timeout_seconds=30.0, interval_seconds=0.5):
-            raise RuntimeError("ComfyUI еще не отвечает по HTTP и не готов для туннеля.")
+        if not wait_for_comfy_data_ready(config, timeout_seconds=120.0, interval_seconds=1.0):
+            error_text = "ComfyUI data fetch is still running; tunnel will start after it finishes."
+            schedule_tunnel_retry(error_text)
+            raise RuntimeError(error_text)
         provider = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
         if not load_state().get("desired_running", False):
             raise RuntimeError("Launch stopped.")
@@ -5548,6 +5615,7 @@ def start_tunnel_if_needed() -> str:
             if mismatch_subdomain:
                 stop_main_tunnel_only()
                 error_text = localtunnel_subdomain_mismatch_message(mismatch_subdomain, mismatch_url)
+                write_portal_log("tunnel.subdomain.retry", error_text, requested=mismatch_subdomain, url=mismatch_url)
                 schedule_tunnel_retry(error_text)
                 raise RuntimeError(error_text)
             detected_url = main_tunnel_candidate_url(config, state, active=True)
@@ -5594,6 +5662,7 @@ def start_tunnel_if_needed() -> str:
         if mismatch_subdomain:
             stop_main_tunnel_only()
             error_text = localtunnel_subdomain_mismatch_message(mismatch_subdomain, mismatch_url)
+            write_portal_log("tunnel.subdomain.retry", error_text, requested=mismatch_subdomain, url=mismatch_url)
             schedule_tunnel_retry(error_text)
             raise RuntimeError(error_text)
         if not pid_is_running(proc.pid):
@@ -5678,6 +5747,9 @@ def start_friend_tunnel(link_id: str) -> str:
         start_comfy_if_needed()
         if not wait_for_comfy_ready(config["port"]):
             raise RuntimeError("ComfyUI не ответил вовремя.")
+
+    if not wait_for_comfy_data_ready(config, timeout_seconds=120.0, interval_seconds=1.0):
+        raise RuntimeError("ComfyUI data fetch is still running; friend tunnel will start after it finishes.")
 
     started_at = time.time()
     proc = launch_localtunnel(comfy_root, config["port"], entry["subdomain"], out_path, err_path)
@@ -5792,6 +5864,10 @@ def start_all() -> str:
     comfy_msg = start_comfy_if_needed()
     if not wait_for_comfy_ready(config["port"]):
         raise RuntimeError("ComfyUI не ответил вовремя.")
+    if not wait_for_comfy_data_ready(config, timeout_seconds=120.0, interval_seconds=1.0):
+        error_text = "ComfyUI data fetch is still running; tunnel will start after it finishes."
+        schedule_tunnel_retry(error_text)
+        raise RuntimeError(error_text)
     if not load_state().get("desired_running", False):
         raise RuntimeError("Launch stopped.")
     tunnel_msg = start_tunnel_if_needed()
@@ -5914,11 +5990,15 @@ def regenerate_main_tunnel() -> str:
     config = load_config()
     ensure_layout(config)
     set_desired_running(True)
-    stop_main_tunnel_only()
     if not port_is_open(config["port"]):
         start_comfy_if_needed()
         if not wait_for_comfy_ready(config["port"]):
             raise RuntimeError("ComfyUI не ответил вовремя.")
+    if not wait_for_comfy_data_ready(config, timeout_seconds=120.0, interval_seconds=1.0):
+        error_text = "ComfyUI data fetch is still running; tunnel will start after it finishes."
+        schedule_tunnel_retry(error_text)
+        raise RuntimeError(error_text)
+    stop_main_tunnel_only()
     start_tunnel_if_needed()
     return "Ссылка туннеля обновляется."
 
@@ -11609,6 +11689,8 @@ class MainWindow(QWidget):
             return
         if not snap["desired_running"] or not snap["comfy_active"]:
             return
+        if snap.get("comfy_registry_fetching", False):
+            return
         if snap["retry_in"] > 0:
             return
         if not snap.get("internet_ok", True):
@@ -11631,6 +11713,8 @@ class MainWindow(QWidget):
 
     def maybe_restore_friend_links(self, snap: dict) -> None:
         if self.busy or not snap["comfy_active"]:
+            return
+        if snap.get("comfy_registry_fetching", False):
             return
         if not snap["friend_links"] or not snap.get("internet_ok", True):
             return
