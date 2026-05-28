@@ -442,6 +442,16 @@ download_model() {
     echo "Put file here: $target"
   }
 
+  civitai_url_with_token() {
+    base_url="$1"
+    token="$2"
+    [ -n "$token" ] || { printf '%s' "$base_url"; return; }
+    case "$base_url" in
+      *\?*) printf '%s&token=%s' "$base_url" "$token" ;;
+      *) printf '%s?token=%s' "$base_url" "$token" ;;
+    esac
+  }
+
   try_download() {
     dl_url="$1"
     auth_header="$2"
@@ -471,7 +481,8 @@ download_model() {
       [ -z "$key" ] && continue
       rm -f "$tmp"
       echo "Downloading with Civitai key: $title"
-      if try_download "$url" "Authorization: Bearer $key" && is_valid_download; then
+      token_url="$(civitai_url_with_token "$url" "$key")"
+      if try_download "$token_url" "" && is_valid_download; then
         downloaded_ok=1
         break
       fi

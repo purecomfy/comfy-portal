@@ -3211,7 +3211,9 @@ def civitai_request_variants(url: str, config: dict | None = None) -> list[tuple
     variants: list[tuple[str, dict[str, str]]] = []
     for mirror_url in civitai_url_mirrors(url):
         for token in rotated_civitai_keys(config):
-            variants.append((append_civitai_token(mirror_url, token), {**headers, **civitai_headers(token)}))
+            # Keep auth in the query string only. urllib carries headers across
+            # redirects, and Civitai storage backends reject Bearer auth headers.
+            variants.append((append_civitai_token(mirror_url, token), dict(headers)))
     if not variants:
         variants.extend((mirror_url, headers) for mirror_url in civitai_url_mirrors(url))
     return variants
