@@ -5099,6 +5099,15 @@ def detect_security_line(line: str, config: dict | None = None) -> dict | None:
     if not text:
         return None
     lower = text.lower()
+    if (
+        "custom_nodes" in lower
+        and (
+            "cannot import" in lower
+            or "load_custom_node" in lower
+            or ("filenotfounderror" in lower and "__init__.py" in lower)
+        )
+    ):
+        return None
     config = config or load_config()
     comfy_root = current_comfy_root(config)
     has_action = any(marker in lower for marker in SECURITY_ACTION_MARKERS)
