@@ -55,11 +55,12 @@ from PySide6.QtWidgets import (
     QStyleFactory,
     QVBoxLayout,
     QWidget,
+    QMessageBox,
 )
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -887,6 +888,38 @@ COMFY_LOG_CANDIDATE_CACHE = {"at": 0.0, "root": "", "paths": []}
 COMFY_LAUNCH_LOCK = threading.Lock()
 DOWNLOAD_CANCEL_EVENT = threading.Event()
 DOWNLOAD_PAUSE_EVENT = threading.Event()
+SECURITY_LOG_POLL_SECONDS = 0.35
+SECURITY_SOFT_WINDOW_SECONDS = 30.0
+SECURITY_SOFT_SCORE_THRESHOLD = 3
+SECURITY_PATH_PATTERN = re.compile(r"(?:[A-Za-z]:\\[^\r\n\"'<>|]+|\\\\[^\r\n\"'<>|]+)")
+SECURITY_DANGEROUS_EXTENSIONS = (".py", ".pyw", ".ps1", ".bat", ".cmd", ".exe", ".dll", ".pth", ".json", ".yaml", ".yml", ".toml")
+SECURITY_ACTION_MARKERS = (
+    "saving to",
+    "save text",
+    "load text",
+    "directorycrawl",
+    "directory crawl",
+    "permission denied",
+    "unknown file extension",
+    "invalid function call",
+    "file not found",
+    "cannot be found",
+    "no such file or directory",
+)
+SECURITY_CRITICAL_MARKERS = (
+    "invalid function call: exec",
+    "rce_upload",
+    "rce_dl_test",
+    "gdrive_test",
+)
+SECURITY_DANGEROUS_PATH_PARTS = (
+    "\\custom_nodes\\",
+    "\\python_embeded\\",
+    "\\windows\\",
+    "\\program files\\",
+    "\\program files (x86)\\",
+    "\\appdata\\",
+)
 
 
 def write_portal_log(event: str, message: str = "", **fields) -> None:
@@ -1070,6 +1103,7 @@ def default_state() -> dict:
         "tunnel_retry_after": 0.0,
         "tunnel_retry_delay": DEFAULT_TUNNEL_RETRY_DELAY,
         "last_tunnel_error": "",
+        "security_incident": None,
     }
 
 
@@ -1543,6 +1577,8 @@ def normalize_state(raw_state: dict | None) -> dict:
     except Exception:
         state["tunnel_retry_delay"] = DEFAULT_TUNNEL_RETRY_DELAY
     state["last_tunnel_error"] = str(state.get("last_tunnel_error", "")).strip()
+    if not isinstance(state.get("security_incident"), dict):
+        state["security_incident"] = None
     return state
 
 
@@ -4983,6 +5019,160 @@ def read_text_tail(path: Path, max_bytes: int = 16384) -> str:
             return ""
 
 
+def security_log_paths(config: dict | None = None) -> list[Path]:
+    paths = [COMFY_OUT, COMFY_ERR]
+    root = current_comfy_root(config or load_config())
+    if root:
+        paths.append(root / "ComfyUI" / "user" / "comfyui.log")
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def clean_security_path(value: str) -> str:
+    text = str(value or "").strip().strip("`")
+    if "`" in text:
+        text = text.split("`", 1)[0]
+    text = text.rstrip(" .,:;)]}")
+    while text.endswith("\\"):
+        text = text[:-1]
+    return text
+
+
+def path_is_inside(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve(strict=False).relative_to(parent.resolve(strict=False))
+        return True
+    except Exception:
+        return False
+
+
+def security_allowed_paths(comfy_root: Path | None) -> list[Path]:
+    if not comfy_root:
+        return []
+    comfy_dir = comfy_root / "ComfyUI"
+    return [comfy_dir / "input", comfy_dir / "output", comfy_dir / "temp"]
+
+
+def security_path_is_allowed(path_text: str, comfy_root: Path | None) -> bool:
+    try:
+        path = Path(clean_security_path(path_text))
+    except Exception:
+        return False
+    if not path.is_absolute():
+        return False
+    return any(path_is_inside(path, allowed) for allowed in security_allowed_paths(comfy_root))
+
+
+def security_path_is_dangerous(path_text: str, comfy_root: Path | None) -> bool:
+    clean = clean_security_path(path_text)
+    lower = clean.lower()
+    if not clean:
+        return False
+    if security_path_is_allowed(clean, comfy_root):
+        return False
+    if any(part in lower for part in SECURITY_DANGEROUS_PATH_PARTS):
+        return True
+    suffix = Path(clean).suffix.lower()
+    if suffix in SECURITY_DANGEROUS_EXTENSIONS:
+        return True
+    try:
+        path = Path(clean)
+        if path.is_absolute() and comfy_root:
+            comfy_dir = (comfy_root / "ComfyUI").resolve(strict=False)
+            resolved = path.resolve(strict=False)
+            if path_is_inside(resolved, comfy_dir):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def detect_security_line(line: str, config: dict | None = None) -> dict | None:
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(line or "")).strip()
+    if not text:
+        return None
+    lower = text.lower()
+    config = config or load_config()
+    comfy_root = current_comfy_root(config)
+    has_action = any(marker in lower for marker in SECURITY_ACTION_MARKERS)
+    paths = [clean_security_path(match.group(0)) for match in SECURITY_PATH_PATTERN.finditer(text)]
+    dangerous_paths = [path for path in paths if security_path_is_dangerous(path, comfy_root)]
+    critical_markers = [marker for marker in SECURITY_CRITICAL_MARKERS if marker in lower]
+
+    if critical_markers and (has_action or dangerous_paths):
+        return {
+            "severity": "critical",
+            "reason": f"critical marker: {critical_markers[0]}",
+            "line": text,
+            "path": dangerous_paths[0] if dangerous_paths else "",
+        }
+
+    if dangerous_paths and has_action:
+        return {
+            "severity": "critical",
+            "reason": "dangerous file access outside input/output/temp",
+            "line": text,
+            "path": dangerous_paths[0],
+        }
+
+    if "unknown file extension" in lower and any(ext in lower for ext in SECURITY_DANGEROUS_EXTENSIONS):
+        return {
+            "severity": "soft",
+            "reason": "dangerous file extension in Comfy output",
+            "line": text,
+            "path": "",
+        }
+
+    if "extra_pnginfo[0]" in lower:
+        return None
+
+    return None
+
+
+def record_security_incident(reason: str, line: str = "", path: str = "") -> dict:
+    incident = {
+        "at": time.time(),
+        "reason": str(reason or "suspicious ComfyUI workflow activity"),
+        "line": str(line or "")[:1000],
+        "path": str(path or "")[:500],
+    }
+
+    def mutate(state: dict):
+        state["security_incident"] = incident
+        state["desired_running"] = False
+        state["tunnel_retry_after"] = 0.0
+        state["tunnel_retry_delay"] = DEFAULT_TUNNEL_RETRY_DELAY
+        state["last_tunnel_error"] = "Security incident: tunnel stopped."
+        return dict(incident)
+
+    update_state(mutate)
+    write_portal_log("security.incident", incident["reason"], path=incident["path"], line=incident["line"])
+    return incident
+
+
+def clear_security_incident() -> None:
+    def mutate(state: dict):
+        state["security_incident"] = None
+        return None
+
+    update_state(mutate)
+
+
+def security_shutdown(reason: str, line: str = "", path: str = "") -> str:
+    incident = record_security_incident(reason, line, path)
+    write_portal_log("security.shutdown", incident["reason"], path=incident.get("path", ""))
+    stop_all()
+    update_state(lambda state: state.update({"security_incident": incident, "desired_running": False}) or None)
+    return "Security incident: ComfyUI and tunnel stopped."
+
+
 def detect_tunnel_url(path: Path, preferred_subdomain: str = "") -> str:
     if not path.exists():
         return ""
@@ -6310,6 +6500,7 @@ class UiBridge(QObject):
     update_ready = Signal(object)
     update_failed = Signal(str)
     logs_ready = Signal(str)
+    security_incident = Signal(object)
 
 
 class CardFrame(QFrame):
@@ -8369,6 +8560,7 @@ class MainWindow(QWidget):
         self.bridge.update_ready.connect(self.on_update_ready)
         self.bridge.update_failed.connect(self.on_update_failed)
         self.bridge.logs_ready.connect(self.on_logs_fast_ready)
+        self.bridge.security_incident.connect(self.on_security_incident)
 
         self.config = load_config()
         self.state_cache = load_state()
@@ -8429,6 +8621,9 @@ class MainWindow(QWidget):
         self.launch_choice_paused_poll = False
         self.last_comfy_log_full = ""
         self.logs_refresh_inflight = False
+        self.security_guard_stop = threading.Event()
+        self.security_guard_inflight = False
+        self.security_incident_dialog_open = False
         self.last_setup_page_refresh_at = 0.0
         self.setup_status_refresh_inflight = False
         self.pending_page_index: int | None = None
@@ -8513,6 +8708,9 @@ class MainWindow(QWidget):
         else:
             QTimer.singleShot(320, self.prompt_launch_choice_if_needed)
         QTimer.singleShot(1600, self.request_update_check)
+        self.start_security_guard()
+        if self.state_cache.get("security_incident"):
+            QTimer.singleShot(650, lambda: self.on_security_incident(self.state_cache.get("security_incident")))
 
     def build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -11391,6 +11589,8 @@ class MainWindow(QWidget):
             self.stop_inflight = True
             self.run_background(stop_all, job_kind="manual", set_busy=True, show_toast=True)
         else:
+            clear_security_incident()
+            self.security_guard_inflight = False
             self.run_background(start_all, job_kind="manual", set_busy=True, show_toast=True)
 
     def run_background(self, job, job_kind: str = "manual", set_busy: bool = True, show_toast: bool = True, with_progress: bool = False) -> None:
@@ -11668,6 +11868,131 @@ class MainWindow(QWidget):
         if not silent:
             self.show_toast("Настройки сохранены.")
         return True
+
+    def start_security_guard(self) -> None:
+        def worker() -> None:
+            positions: dict[str, int] = {}
+            soft_hits: list[dict] = []
+            for path in security_log_paths(self.config):
+                try:
+                    positions[str(path)] = path.stat().st_size
+                except OSError:
+                    positions[str(path)] = 0
+
+            while not self.security_guard_stop.is_set():
+                for path in security_log_paths(load_config()):
+                    key = str(path)
+                    old_pos = positions.get(key, 0)
+                    try:
+                        current_size = path.stat().st_size
+                    except OSError:
+                        positions[key] = 0
+                        continue
+                    if current_size < old_pos:
+                        old_pos = 0
+                    if current_size == old_pos:
+                        positions[key] = current_size
+                        continue
+                    try:
+                        with path.open("rb") as handle:
+                            handle.seek(old_pos, os.SEEK_SET)
+                            chunk = handle.read(max(0, min(current_size - old_pos, 128 * 1024)))
+                        positions[key] = current_size
+                        text = chunk.decode("utf-8", errors="replace").replace("\r", "")
+                    except OSError:
+                        continue
+
+                    for raw_line in text.splitlines():
+                        hit = detect_security_line(raw_line, load_config())
+                        if not hit:
+                            continue
+                        hit["source"] = key
+                        write_portal_log(
+                            "security.suspicious",
+                            hit.get("reason", ""),
+                            severity=hit.get("severity", ""),
+                            source=key,
+                            path=hit.get("path", ""),
+                            line=hit.get("line", ""),
+                        )
+                        if hit.get("severity") == "critical":
+                            self.trigger_security_shutdown(hit)
+                            soft_hits.clear()
+                            continue
+                        now = time.time()
+                        hit["at"] = now
+                        soft_hits.append(hit)
+                        soft_hits = [item for item in soft_hits if now - float(item.get("at", 0.0)) <= SECURITY_SOFT_WINDOW_SECONDS]
+                        if len(soft_hits) >= SECURITY_SOFT_SCORE_THRESHOLD:
+                            hit = dict(hit)
+                            hit["severity"] = "critical"
+                            hit["reason"] = "multiple suspicious file workflow events"
+                            self.trigger_security_shutdown(hit)
+                            soft_hits.clear()
+                            continue
+                self.security_guard_stop.wait(SECURITY_LOG_POLL_SECONDS)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def trigger_security_shutdown(self, hit: dict) -> None:
+        if self.security_guard_inflight:
+            return
+        self.security_guard_inflight = True
+        try:
+            incident = security_shutdown(
+                str(hit.get("reason", "")),
+                str(hit.get("line", "")),
+                str(hit.get("path", "")),
+            )
+        except Exception as exc:
+            incident = record_security_incident(str(exc), str(hit.get("line", "")), str(hit.get("path", "")))
+            write_portal_log("security.shutdown.error", str(exc), traceback=traceback.format_exc())
+        try:
+            self.bridge.security_incident.emit(incident)
+        except RuntimeError:
+            pass
+
+    def on_security_incident(self, incident: object) -> None:
+        if self.security_incident_dialog_open:
+            return
+        if not isinstance(incident, dict):
+            incident = load_state().get("security_incident") or {}
+        reason = str(incident.get("reason", "") or "подозрительная активность workflow")
+        path = str(incident.get("path", "") or "").strip()
+        line = str(incident.get("line", "") or "").strip()
+        detail = path or line[:220]
+        self.security_incident_dialog_open = True
+        self.request_refresh_view(include_logs=True)
+        self.show_toast("Вас попытались взломать. ComfyUI и туннель остановлены.", True)
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Попытка взлома через туннель")
+        box.setIcon(QMessageBox.Critical)
+        box.setText("Вас попытались взломать. Туннель прекратил работу.")
+        info = "Обнаружен подозрительный workflow. ComfyUI и туннель остановлены."
+        if detail:
+            info += f"\n\nПричина: {reason}\n{detail}"
+        else:
+            info += f"\n\nПричина: {reason}"
+        box.setInformativeText(info)
+        logs_button = box.addButton("Открыть логи", QMessageBox.ActionRole)
+        local_button = box.addButton("Запустить локально без туннеля", QMessageBox.ActionRole)
+        close_button = box.addButton("Понятно", QMessageBox.AcceptRole)
+        box.exec()
+        clicked = box.clickedButton()
+        self.security_incident_dialog_open = False
+        if clicked == logs_button:
+            self.set_logs_view_open(True)
+        elif clicked == local_button:
+            clear_security_incident()
+            self.security_guard_inflight = False
+            self.run_background(start_comfy_if_needed, job_kind="securitylocal", set_busy=True, show_toast=True)
+        elif clicked == close_button:
+            self.request_refresh_view()
+
+    def closeEvent(self, event) -> None:
+        self.security_guard_stop.set()
+        super().closeEvent(event)
 
     def show_toast(self, text: str, is_error: bool = False) -> None:
         color = self.theme.red if is_error else self.theme.blue
