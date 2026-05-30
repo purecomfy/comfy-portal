@@ -894,17 +894,21 @@ SECURITY_SOFT_SCORE_THRESHOLD = 3
 SECURITY_PATH_PATTERN = re.compile(r"(?:[A-Za-z]:\\[^\r\n\"'<>|]+|\\\\[^\r\n\"'<>|]+)")
 SECURITY_DANGEROUS_EXTENSIONS = (".py", ".pyw", ".ps1", ".bat", ".cmd", ".exe", ".dll", ".pth", ".json", ".yaml", ".yml", ".toml")
 SECURITY_ACTION_MARKERS = (
-    "saving to",
     "save text",
     "load text",
     "directorycrawl",
     "directory crawl",
-    "permission denied",
     "unknown file extension",
     "invalid function call",
-    "file not found",
+)
+SECURITY_WEAK_ACTION_MARKERS = (
+    "saving to",
+    "writing",
+    "write to",
+    "download",
+    "downloading",
+    "permission denied",
     "cannot be found",
-    "no such file or directory",
 )
 SECURITY_CRITICAL_MARKERS = (
     "invalid function call: exec",
@@ -3003,6 +3007,75 @@ def embedded_python_import_check(python_bin: Path, import_code: str) -> tuple[bo
     return False, error_text[:2000]
 
 
+def comfy_torch_preflight_message_is_blocking(message: object) -> bool:
+    text = str(message or "").strip()
+    return ("PyTorch" in text and "python_embeded" in text) or ("CUDA" in text and ("GPU" in text or "PyTorch" in text))
+
+
+def check_comfy_torch_preflight(root: Path, config: dict) -> None:
+    python_bin = root / "python_embeded" / "python.exe"
+    if not python_bin.exists():
+        return
+    launch_mode = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+    code = (
+        "import json\n"
+        "try:\n"
+        "    import torch\n"
+        "    cuda_available = bool(torch.cuda.is_available())\n"
+        "    cuda_version = getattr(torch.version, 'cuda', None)\n"
+        "    gpu_name = ''\n"
+        "    if cuda_available:\n"
+        "        try:\n"
+        "            gpu_name = torch.cuda.get_device_name(0)\n"
+        "        except Exception:\n"
+        "            gpu_name = ''\n"
+        "    print(json.dumps({\n"
+        "        'ok': True,\n"
+        "        'torch': str(getattr(torch, '__version__', '')),\n"
+        "        'cuda_available': cuda_available,\n"
+        "        'cuda': str(cuda_version or ''),\n"
+        "        'gpu': str(gpu_name or ''),\n"
+        "    }))\n"
+        "except Exception as exc:\n"
+        "    print(json.dumps({'ok': False, 'error': repr(exc)}))\n"
+    )
+    try:
+        result = run_hidden_process_utf8([str(python_bin), "-s", "-c", code], python_bin.parent, timeout=45)
+    except subprocess.TimeoutExpired as exc:
+        write_portal_log("comfy.torch.check.timeout", str(exc), root=root, mode=launch_mode)
+        raise RuntimeError("PyTorch не установлен или не отвечает в python_embeded. Установите PyTorch вручную в portable ComfyUI.") from exc
+    output = (decode_process_output(result.stdout) or "").strip()
+    error_output = (decode_process_output(result.stderr) or "").strip()
+    info: dict = {}
+    if output:
+        try:
+            info = json.loads(output.splitlines()[-1])
+        except Exception:
+            info = {}
+    if result.returncode != 0 or not info.get("ok"):
+        error_text = str(info.get("error") or error_output or output or "torch import failed")
+        write_portal_log("comfy.torch.missing", error_text, root=root, mode=launch_mode, returncode=result.returncode)
+        update_state(lambda state: state.update({"desired_running": False, "last_tunnel_error": "PyTorch is missing."}) or None)
+        raise RuntimeError(
+            "PyTorch не установлен в python_embeded. Установите PyTorch вручную в portable ComfyUI, потом запустите портал снова."
+        )
+    write_portal_log(
+        "comfy.torch.check",
+        root=root,
+        mode=launch_mode,
+        torch=str(info.get("torch", "")),
+        cuda_available=bool(info.get("cuda_available", False)),
+        cuda=str(info.get("cuda", "")),
+        gpu=str(info.get("gpu", "")),
+    )
+    if launch_mode != "cpu" and not bool(info.get("cuda_available", False)):
+        update_state(lambda state: state.update({"desired_running": False, "last_tunnel_error": "CUDA is unavailable."}) or None)
+        write_portal_log("comfy.cuda.unavailable", root=root, mode=launch_mode, torch=str(info.get("torch", "")), cuda=str(info.get("cuda", "")))
+        raise RuntimeError(
+            "CUDA недоступна для выбранного GPU-режима. Установите NVIDIA Driver и PyTorch CUDA вручную или выберите CPU режим в настройках портала."
+        )
+
+
 def version_in_range(version: str, minimum: str, maximum_exclusive: str) -> bool:
     parsed = parse_version_tuple(version)
     return parsed >= parse_version_tuple(minimum) and parsed < parse_version_tuple(maximum_exclusive)
@@ -5094,33 +5167,55 @@ def security_path_is_dangerous(path_text: str, comfy_root: Path | None) -> bool:
     return False
 
 
+def security_path_has_dangerous_extension(path_text: str) -> bool:
+    try:
+        return Path(clean_security_path(path_text)).suffix.lower() in SECURITY_DANGEROUS_EXTENSIONS
+    except Exception:
+        return False
+
+
+def security_line_is_custom_node_import_status(lower: str) -> bool:
+    if "custom_nodes" not in lower:
+        return False
+    return (
+        "(import failed)" in lower
+        or "cannot import" in lower
+        or "load_custom_node" in lower
+        or ("filenotfounderror" in lower and "__init__.py" in lower)
+        or ("no such file or directory" in lower and "__init__.py" in lower)
+    )
+
+
 def detect_security_line(line: str, config: dict | None = None) -> dict | None:
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(line or "")).strip()
     if not text:
         return None
     lower = text.lower()
-    if (
-        "custom_nodes" in lower
-        and (
-            "cannot import" in lower
-            or "load_custom_node" in lower
-            or ("filenotfounderror" in lower and "__init__.py" in lower)
-        )
-    ):
+    if security_line_is_custom_node_import_status(lower):
         return None
     config = config or load_config()
     comfy_root = current_comfy_root(config)
     has_action = any(marker in lower for marker in SECURITY_ACTION_MARKERS)
+    has_weak_action = any(marker in lower for marker in SECURITY_WEAK_ACTION_MARKERS)
     paths = [clean_security_path(match.group(0)) for match in SECURITY_PATH_PATTERN.finditer(text)]
     dangerous_paths = [path for path in paths if security_path_is_dangerous(path, comfy_root)]
+    dangerous_extension_paths = [path for path in dangerous_paths if security_path_has_dangerous_extension(path)]
     critical_markers = [marker for marker in SECURITY_CRITICAL_MARKERS if marker in lower]
 
-    if critical_markers and (has_action or dangerous_paths):
+    if "invalid function call: exec" in lower:
+        return {
+            "severity": "critical",
+            "reason": "critical marker: invalid function call: exec",
+            "line": text,
+            "path": dangerous_paths[0] if dangerous_paths else "",
+        }
+
+    if critical_markers and has_action and dangerous_paths:
         return {
             "severity": "critical",
             "reason": f"critical marker: {critical_markers[0]}",
             "line": text,
-            "path": dangerous_paths[0] if dangerous_paths else "",
+            "path": dangerous_paths[0],
         }
 
     if dangerous_paths and has_action:
@@ -5129,6 +5224,14 @@ def detect_security_line(line: str, config: dict | None = None) -> dict | None:
             "reason": "dangerous file access outside input/output/temp",
             "line": text,
             "path": dangerous_paths[0],
+        }
+
+    if dangerous_extension_paths and has_weak_action:
+        return {
+            "severity": "critical",
+            "reason": "dangerous file write/download outside input/output/temp",
+            "line": text,
+            "path": dangerous_extension_paths[0],
         }
 
     if "unknown file extension" in lower and any(ext in lower for ext in SECURITY_DANGEROUS_EXTENSIONS):
@@ -5143,6 +5246,27 @@ def detect_security_line(line: str, config: dict | None = None) -> dict | None:
         return None
 
     return None
+
+
+def security_incident_is_startup_import_false_positive(incident: object) -> bool:
+    if not isinstance(incident, dict):
+        return False
+    text = " ".join(
+        str(incident.get(key, "") or "")
+        for key in ("reason", "line", "path")
+    ).lower()
+    if "custom_nodes" not in text:
+        return False
+    if "(import failed)" in text:
+        return True
+    if "__init__.py" not in text:
+        return False
+    return (
+        "cannot import" in text
+        or "load_custom_node" in text
+        or "filenotfounderror" in text
+        or "no such file or directory" in text
+    )
 
 
 def record_security_incident(reason: str, line: str = "", path: str = "") -> dict:
@@ -5766,6 +5890,7 @@ def start_comfy_if_needed() -> str:
         if port_open and not comfy_ready:
             raise RuntimeError(f"Порт {config['port']} уже занят другим приложением.")
 
+        check_comfy_torch_preflight(comfy_root, config)
         repair_comfy_python_dependencies(comfy_root)
         clear_logs(COMFY_OUT, COMFY_ERR)
         out = open(COMFY_OUT, "w", encoding="utf-8")
@@ -8718,7 +8843,17 @@ class MainWindow(QWidget):
             QTimer.singleShot(320, self.prompt_launch_choice_if_needed)
         QTimer.singleShot(1600, self.request_update_check)
         self.start_security_guard()
-        if self.state_cache.get("security_incident"):
+        saved_incident = self.state_cache.get("security_incident")
+        if security_incident_is_startup_import_false_positive(saved_incident):
+            clear_security_incident()
+            self.state_cache["security_incident"] = None
+            write_portal_log(
+                "security.incident.cleared_false_positive",
+                "startup custom node import error",
+                line=str(saved_incident.get("line", "")) if isinstance(saved_incident, dict) else "",
+                path=str(saved_incident.get("path", "")) if isinstance(saved_incident, dict) else "",
+            )
+        elif saved_incident:
             QTimer.singleShot(650, lambda: self.on_security_incident(self.state_cache.get("security_incident")))
 
     def build_ui(self) -> None:
@@ -11736,8 +11871,33 @@ class MainWindow(QWidget):
             self.refresh_onboarding_flow()
             self.set_launch_choice_open(True)
         self.request_refresh_view()
+        if is_error and not silent and comfy_torch_preflight_message_is_blocking(message):
+            self.show_comfy_torch_preflight_dialog(message)
         if not silent:
             self.show_toast(message, is_error)
+
+    def show_comfy_torch_preflight_dialog(self, message: str) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("ComfyUI не запущен")
+        box.setIcon(QMessageBox.Warning)
+        if "CUDA" in str(message or ""):
+            box.setText("CUDA недоступна.")
+            box.setInformativeText(
+                "Портал не будет сам ставить CUDA или PyTorch.\n\n"
+                "Установите NVIDIA Driver и PyTorch CUDA вручную в python_embeded portable ComfyUI, "
+                "или выберите CPU режим в настройках портала."
+            )
+        else:
+            box.setText("PyTorch не установлен.")
+            box.setInformativeText(
+                "Портал не будет сам ставить PyTorch.\n\n"
+                "Установите PyTorch вручную в python_embeded portable ComfyUI, потом запустите Comfy снова."
+            )
+        logs_button = box.addButton("Открыть логи", QMessageBox.ActionRole)
+        box.addButton("Понятно", QMessageBox.AcceptRole)
+        box.exec()
+        if box.clickedButton() == logs_button:
+            self.set_logs_view_open(True)
 
     def copy_value(self, text: str, empty_value: str, success_text: str) -> None:
         clean = text.strip()
