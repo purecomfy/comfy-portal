@@ -125,7 +125,7 @@ sudo pacman -Syu --needed \
 mkdir -p "$COMFY_BASE"
 
 if [ ! -d "$COMFY_DIR/.git" ]; then
-  git clone https://github.com/comfyanonymous/ComfyUI.git "$COMFY_DIR"
+  git clone https://github.com/Comfy-Org/ComfyUI.git "$COMFY_DIR"
 else
   git -C "$COMFY_DIR" pull --ff-only || true
 fi

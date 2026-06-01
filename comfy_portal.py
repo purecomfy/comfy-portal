@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -69,8 +69,8 @@ GITHUB_RELEASES_URL = f"{GITHUB_REPO_URL}/releases"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/purecomfy/comfy-portal/releases/latest"
 GITHUB_PORTABLE_ASSET_NAME = "Comfy.Portal.Portable.Release.zip"
 GITHUB_ONEFILE_ASSET_NAME = "Comfy.Portal.exe"
-COMFY_GITHUB_REPO_URL = "https://github.com/comfyanonymous/ComfyUI"
-COMFY_GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/comfyanonymous/ComfyUI/releases/latest"
+COMFY_GITHUB_REPO_URL = "https://github.com/Comfy-Org/ComfyUI"
+COMFY_GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest"
 DEFAULT_WIDTH = 1220
 DEFAULT_HEIGHT = 780
 DRAWER_WIDTH = 390
@@ -91,7 +91,11 @@ DOWNLOAD_INCOMPLETE_RETRY_LIMIT = 12
 DEFAULT_TUNNEL_RETRY_DELAY = 5.0
 MAX_TUNNEL_RETRY_DELAY = 45.0
 COMFY_REQUIREMENT_PREFLIGHT_PACKAGES = (
+    "comfyui-frontend-package",
+    "comfyui-workflow-templates",
     "comfyui-embedded-docs",
+    "comfy-kitchen",
+    "comfy-aimdo",
 )
 PREFER_COMFY_STABLE_UPDATER = False
 DEFAULT_TUNNEL_PROVIDER = "localtunnel"
@@ -130,7 +134,7 @@ FRIEND_LINK_PATTERN = re.compile(r"friendscomfy(?:\d{6}|\d{8})")
 SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9-]{3,63}$")
 SUBDOMAIN_ARG_PATTERN = re.compile(r"--subdomain\s+([a-z0-9-]+)")
 PUBLIC_URL_PATTERN = re.compile(r"https://([a-z0-9-]+)\.loca\.lt")
-COMFYUI_PORTABLE_URL = "https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z"
+COMFYUI_PORTABLE_URL = "https://github.com/Comfy-Org/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z"
 COMFYUI_PORTABLE_ARCHIVE_NAME = "ComfyUI_windows_portable_nvidia.7z"
 COMFY_PACKAGE_MARKER_NAME = ".comfy_portal_source.json"
 CUSTOM_COMFY_ARCHIVE_NAME = "ComfyPortal.custom_comfy.7z"
@@ -3219,6 +3223,26 @@ def repair_comfy_python_dependencies(root: Path) -> None:
     if import_ok:
         return
     write_portal_log("comfy.deps.import_error", import_error, root=root, transformers=transformers_version, huggingface_hub=hub_version or "missing")
+    mismatched_hub_table = (
+        "huggingface-hub>=1.5.0,<2.0" in import_error
+        and "huggingface-hub<1.0" in hub_requirement
+    )
+    if mismatched_hub_table:
+        embedded_pip_install(root, ["--force-reinstall", "--no-deps", "transformers==4.56.2"])
+        embedded_pip_install(root, ["huggingface-hub>=0.34.0,<1.0"])
+        transformers_version = embedded_python_package_version(python_bin, "transformers")
+        hub_version = embedded_python_package_version(python_bin, "huggingface-hub")
+        import_ok, import_error = embedded_python_import_check(python_bin, "from transformers import CLIPTokenizer\nprint('ok')\n")
+        write_portal_log(
+            "comfy.deps.transformers_reinstalled",
+            import_error,
+            root=root,
+            transformers=transformers_version or "missing",
+            huggingface_hub=hub_version or "missing",
+            import_ok=import_ok,
+        )
+        if import_ok:
+            return
     needs_hub_15 = (
         (">=1.5.0" in hub_requirement and "<2.0" in hub_requirement)
         or parse_version_tuple(transformers_version) >= parse_version_tuple("4.57.0")
@@ -4774,6 +4798,7 @@ def port_is_open(port: int) -> bool:
 def comfy_http_ready(port: int, timeout_seconds: float = COMFY_HTTP_TIMEOUT) -> bool:
     headers = {"User-Agent": DOWNLOAD_USER_AGENT}
     probes = (
+        (f"http://127.0.0.1:{int(port)}/api/system_stats", ("devices", "system")),
         (f"http://127.0.0.1:{int(port)}/system_stats", ("devices", "system")),
         (f"http://127.0.0.1:{int(port)}/", ("comfy", "<!doctype html", "<html")),
     )
@@ -4790,6 +4815,15 @@ def comfy_http_ready(port: int, timeout_seconds: float = COMFY_HTTP_TIMEOUT) -> 
     return False
 
 
+def comfy_api_path_candidates(path: str) -> tuple[str, ...]:
+    clean_path = "/" + str(path or "").lstrip("/")
+    if clean_path.startswith("/api/"):
+        return (clean_path, clean_path[4:])
+    if clean_path in {"/system_stats", "/queue", "/prompt"} or clean_path.startswith(("/object_info/", "/history/")):
+        return (f"/api{clean_path}", clean_path)
+    return (clean_path,)
+
+
 def wait_for_comfy_ready(port: int, timeout_seconds: float = 90.0, interval_seconds: float = 0.6) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -4800,24 +4834,31 @@ def wait_for_comfy_ready(port: int, timeout_seconds: float = 90.0, interval_seco
 
 
 def local_comfy_request_json(port: int, path: str, timeout_seconds: float = 8.0) -> dict:
-    clean_path = "/" + str(path or "").lstrip("/")
-    url = f"http://127.0.0.1:{int(port)}{clean_path}"
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": DOWNLOAD_USER_AGENT,
-            "Accept": "application/json",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        status = int(getattr(response, "status", response.getcode()) or 200)
-        text = response.read().decode("utf-8", errors="replace")
-        if status != 200:
-            raise RuntimeError(f"HTTP {status}: {text[:400]}")
-        value = json.loads(text)
-        if not isinstance(value, dict):
-            raise RuntimeError("JSON response is not an object")
-        return value
+    last_error: Exception | None = None
+    for clean_path in comfy_api_path_candidates(path):
+        url = f"http://127.0.0.1:{int(port)}{clean_path}"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": DOWNLOAD_USER_AGENT,
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                status = int(getattr(response, "status", response.getcode()) or 200)
+                text = response.read().decode("utf-8", errors="replace")
+                if status != 200:
+                    raise RuntimeError(f"HTTP {status}: {text[:400]}")
+                value = json.loads(text)
+                if not isinstance(value, dict):
+                    raise RuntimeError("JSON response is not an object")
+                return value
+        except Exception as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No ComfyUI API path candidates")
 
 
 def local_comfy_data_ready(port: int) -> bool:
@@ -5384,6 +5425,8 @@ def public_comfy_http_ready(url: str, timeout_seconds: float = 1.2) -> bool:
     if is_localtunnel_url(clean_url):
         timeout_seconds = max(timeout_seconds, PUBLIC_TUNNEL_HTTP_TIMEOUT)
     probes = (
+        (f"{clean_url}/api/system_stats", ("devices", "system", "vram_total")),
+        (f"{clean_url}/api/queue", ("queue_running", "queue_pending", "running", "pending")),
         (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
         (f"{clean_url}/queue", ("queue_running", "queue_pending", "running", "pending")),
         (clean_url, ("comfyui", "comfyui_frontend_package")),
@@ -5424,6 +5467,24 @@ def public_tunnel_request_json(url: str, timeout_seconds: float = 15.0, method: 
         if not isinstance(value, dict):
             raise RuntimeError("JSON response is not an object")
         return value
+
+
+def public_tunnel_api_request_json(base_url: str, path: str, timeout_seconds: float = 15.0, method: str = "GET", payload: dict | None = None) -> dict:
+    clean_url = str(base_url or "").strip().rstrip("/")
+    last_error: Exception | None = None
+    for clean_path in comfy_api_path_candidates(path):
+        try:
+            return public_tunnel_request_json(
+                f"{clean_url}{clean_path}",
+                timeout_seconds=timeout_seconds,
+                method=method,
+                payload=payload,
+            )
+        except Exception as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No public ComfyUI API path candidates")
 
 
 def public_comfy_ws_ready(url: str, timeout_seconds: float = 8.0) -> bool:
@@ -5498,10 +5559,11 @@ def public_comfy_prompt_ready(url: str, timeout_seconds: float = 45.0) -> bool:
         },
     }
     try:
-        public_tunnel_request_json(f"{clean_url}/object_info/EmptyImage", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
-        public_tunnel_request_json(f"{clean_url}/object_info/SaveImage", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
-        prompt_response = public_tunnel_request_json(
-            f"{clean_url}/prompt",
+        public_tunnel_api_request_json(clean_url, "/object_info/EmptyImage", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
+        public_tunnel_api_request_json(clean_url, "/object_info/SaveImage", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
+        prompt_response = public_tunnel_api_request_json(
+            clean_url,
+            "/prompt",
             timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT,
             method="POST",
             payload={"prompt": workflow, "client_id": client_id},
@@ -5512,7 +5574,7 @@ def public_comfy_prompt_ready(url: str, timeout_seconds: float = 45.0) -> bool:
             return False
         deadline = time.time() + max(timeout_seconds, 10.0)
         while time.time() < deadline:
-            history = public_tunnel_request_json(f"{clean_url}/history/{prompt_id}", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
+            history = public_tunnel_api_request_json(clean_url, f"/history/{prompt_id}", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
             if prompt_id in history:
                 write_portal_log("tunnel.probe.prompt.done", url=clean_url, prompt_id=prompt_id)
                 return True
