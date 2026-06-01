@@ -97,14 +97,17 @@ PREFER_COMFY_STABLE_UPDATER = False
 DEFAULT_TUNNEL_PROVIDER = "localtunnel"
 TUNNEL_PROVIDER_LOCALTUNNEL = "localtunnel"
 TUNNEL_PROVIDERS = (TUNNEL_PROVIDER_LOCALTUNNEL,)
-LOCALTUNNEL_HOST = "http://localtunnel.me"
+LOCALTUNNEL_HOST = "https://localtunnel.me"
 MAX_FRIEND_LINKS = 5
 DISCOVER_COMFY_CACHE_TTL = 90.0
 DISCOVER_COMFY_BUDGET_SECONDS = 2.8
 DISCOVER_COMFY_DEEP_BUDGET_SECONDS = 4.5
 LOG_VIEW_POLL_MS = 550
 PUBLIC_TUNNEL_CACHE_TTL = 18.0
-TUNNEL_READY_GRACE_SECONDS = 38.0
+PUBLIC_TUNNEL_HTTP_TIMEOUT = 60.0
+PUBLIC_TUNNEL_PROMPT_TIMEOUT = 120.0
+TUNNEL_READY_GRACE_SECONDS = 140.0
+MAIN_TUNNEL_LAUNCH_ATTEMPTS = 4
 FRIEND_TUNNEL_READY_SECONDS = 2.5
 UPDATE_CHECK_CACHE_TTL = 900.0
 OVERLAY_ANIMATION_MS = 260
@@ -387,6 +390,30 @@ STARTER_MODEL_SPECS = (
         "detect_names": ("qwen_image_vae.safetensors",),
         "detect_contains_any": ("qwen_image_vae", "2846827"),
         "detect_extensions": (".safetensors", ".ckpt"),
+    },
+    {
+        "title": "BiRefNet Background Removal",
+        "filename": "birefnet.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors",
+        "relative_dir": ("ComfyUI", "models", "background_removal"),
+    },
+    {
+        "title": "FILM Frame Interpolation FP16",
+        "filename": "film_net_fp16.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/frame_interpolation/resolve/main/frame_interpolation/film_net_fp16.safetensors",
+        "relative_dir": ("ComfyUI", "models", "frame_interpolation"),
+    },
+    {
+        "title": "FLUX.2 Klein Base 4B FP8",
+        "filename": "flux-2-klein-base-4b-fp8.safetensors",
+        "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4b-fp8/resolve/main/flux-2-klein-base-4b-fp8.safetensors",
+        "relative_dir": ("ComfyUI", "models", "unet"),
+    },
+    {
+        "title": "FLUX.2 Small Decoder VAE",
+        "filename": "full_encoder_small_decoder.safetensors",
+        "url": "https://huggingface.co/black-forest-labs/FLUX.2-small-decoder/resolve/main/full_encoder_small_decoder.safetensors",
+        "relative_dir": ("ComfyUI", "models", "vae"),
     },
     {
         "title": "bbox/face_yolov8m.pt",
@@ -5355,11 +5382,11 @@ def public_comfy_http_ready(url: str, timeout_seconds: float = 1.2) -> bool:
         return False
     headers = {"User-Agent": DOWNLOAD_USER_AGENT, "bypass-tunnel-reminder": "true"}
     if is_localtunnel_url(clean_url):
-        timeout_seconds = max(timeout_seconds, 5.0)
+        timeout_seconds = max(timeout_seconds, PUBLIC_TUNNEL_HTTP_TIMEOUT)
     probes = (
+        (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
         (f"{clean_url}/queue", ("queue_running", "queue_pending", "running", "pending")),
         (clean_url, ("comfyui", "comfyui_frontend_package")),
-        (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
     )
     for probe_url, markers in probes:
         try:
@@ -5471,11 +5498,11 @@ def public_comfy_prompt_ready(url: str, timeout_seconds: float = 45.0) -> bool:
         },
     }
     try:
-        public_tunnel_request_json(f"{clean_url}/object_info/EmptyImage", timeout_seconds=12.0)
-        public_tunnel_request_json(f"{clean_url}/object_info/SaveImage", timeout_seconds=12.0)
+        public_tunnel_request_json(f"{clean_url}/object_info/EmptyImage", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
+        public_tunnel_request_json(f"{clean_url}/object_info/SaveImage", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
         prompt_response = public_tunnel_request_json(
             f"{clean_url}/prompt",
-            timeout_seconds=20.0,
+            timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT,
             method="POST",
             payload={"prompt": workflow, "client_id": client_id},
         )
@@ -5485,7 +5512,7 @@ def public_comfy_prompt_ready(url: str, timeout_seconds: float = 45.0) -> bool:
             return False
         deadline = time.time() + max(timeout_seconds, 10.0)
         while time.time() < deadline:
-            history = public_tunnel_request_json(f"{clean_url}/history/{prompt_id}", timeout_seconds=12.0)
+            history = public_tunnel_request_json(f"{clean_url}/history/{prompt_id}", timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
             if prompt_id in history:
                 write_portal_log("tunnel.probe.prompt.done", url=clean_url, prompt_id=prompt_id)
                 return True
@@ -5497,25 +5524,32 @@ def public_comfy_prompt_ready(url: str, timeout_seconds: float = 45.0) -> bool:
         return False
 
 
-def public_comfy_full_probe(url: str) -> bool:
+def public_comfy_full_probe(url: str, require_prompt: bool = False) -> bool:
     clean_url = str(url or "").strip().rstrip("/")
     if not clean_url:
         return False
-    http_ok = public_comfy_http_ready(clean_url, timeout_seconds=8.0)
+    http_ok = public_comfy_http_ready(clean_url, timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
     if not http_ok:
         write_portal_log("tunnel.probe.full", url=clean_url, http=False, ws=False, prompt=False)
         return False
-    prompt_ok = public_comfy_prompt_ready(clean_url, timeout_seconds=60.0)
+    prompt_ok = public_comfy_prompt_ready(clean_url, timeout_seconds=PUBLIC_TUNNEL_PROMPT_TIMEOUT)
     write_portal_log("tunnel.probe.full", url=clean_url, http=True, ws="skipped", prompt=prompt_ok)
-    return prompt_ok
+    if not prompt_ok:
+        write_portal_log("tunnel.probe.prompt.warning", "public prompt probe failed; keeping HTTP-ready tunnel", url=clean_url)
+    return prompt_ok if require_prompt else True
 
 
-def public_comfy_url_ready(url: str, timeout_seconds: float = 1.2, full_probe: bool = False) -> bool:
+def public_comfy_url_ready(
+    url: str,
+    timeout_seconds: float = 1.2,
+    full_probe: bool = False,
+    require_prompt: bool = False,
+) -> bool:
     clean_url = str(url or "").strip().rstrip("/")
     if not clean_url:
         return False
     if full_probe:
-        return public_comfy_full_probe(clean_url)
+        return public_comfy_full_probe(clean_url, require_prompt=require_prompt)
     return public_comfy_http_ready(clean_url, timeout_seconds=timeout_seconds)
 
 
@@ -5532,8 +5566,8 @@ def public_tunnel_probe_error_message(url: str = "") -> str:
     clean_url = str(url or "").strip().rstrip("/")
     suffix = f" ({clean_url})" if clean_url else ""
     return (
-        "Туннель не прошел полную проверку"
-        f"{suffix}: через публичную ссылку должны работать HTTP и тестовый prompt ComfyUI."
+        "Туннель не прошел публичную HTTP-проверку"
+        f"{suffix}: через публичную ссылку должны открываться базовые API ComfyUI."
     )
 
 
@@ -5567,8 +5601,10 @@ def wait_for_public_tunnel_url(
     normalize_tunnel_provider(provider)
     while time.time() < deadline:
         detected = detect_tunnel_url_from_logs(log_paths, subdomain)
+        detected_from_logs = bool(detected)
         if detected and not is_localtunnel_url(detected):
             detected = ""
+            detected_from_logs = False
         if requested_subdomain and not detected:
             actual_url = detect_any_tunnel_url_from_logs(log_paths)
             actual_subdomain = extract_public_subdomain(actual_url)
@@ -5586,8 +5622,14 @@ def wait_for_public_tunnel_url(
             last_detected = detected
             if cached_public_tunnel_ready(detected, force=True):
                 return detected
+            if detected_from_logs and localtunnel_assumed_ready(detected, config=config, active=True, min_age_seconds=6.0):
+                write_portal_log("tunnel.probe.public.warning", "public HTTP probe failed; accepting exact LocalTunnel URL with local Comfy ready", url=detected)
+                return detected
         time.sleep(interval_seconds)
     if last_detected and cached_public_tunnel_ready(last_detected, force=True):
+        return last_detected
+    if last_detected and localtunnel_assumed_ready(last_detected, config=config, active=True, min_age_seconds=6.0):
+        write_portal_log("tunnel.probe.public.warning", "public HTTP probe failed after timeout; accepting exact LocalTunnel URL with local Comfy ready", url=last_detected)
         return last_detected
     return ""
 
@@ -5944,16 +5986,27 @@ def start_tunnel_if_needed() -> str:
                 write_portal_log("tunnel.subdomain.retry", error_text, requested=mismatch_subdomain, url=mismatch_url)
                 schedule_tunnel_retry(error_text)
                 raise RuntimeError(error_text)
-            detected_url = main_tunnel_candidate_url(config, state, active=True)
+            detected_from_logs = main_tunnel_detected_url(config, active=True)
+            detected_url = detected_from_logs or main_tunnel_candidate_url(config, state, active=True)
             detected_ready = bool(
                 detected_url
                 and cached_public_tunnel_ready(detected_url, force=True)
             )
+            if (
+                not detected_ready
+                and detected_from_logs
+                and localtunnel_assumed_ready(detected_from_logs, config=config, active=True, min_age_seconds=6.0)
+            ):
+                detected_url = detected_from_logs
+                detected_ready = True
+                write_portal_log("tunnel.probe.public.warning", "public HTTP probe failed; keeping exact LocalTunnel URL with local Comfy ready", url=detected_url)
             if detected_ready:
                 if state.get("last_url") != detected_url:
                     state["last_url"] = detected_url
-                    state["last_tunnel_error"] = ""
-                    save_state(state)
+                state["last_tunnel_error"] = ""
+                state["tunnel_retry_after"] = 0.0
+                state["tunnel_retry_delay"] = DEFAULT_TUNNEL_RETRY_DELAY
+                save_state(state)
                 return "Туннель уже активен."
             if main_tunnel_process_age(state) >= TUNNEL_READY_GRACE_SECONDS:
                 stop_main_tunnel_only()
@@ -5964,43 +6017,58 @@ def start_tunnel_if_needed() -> str:
             else:
                 return "Туннель запускается."
 
-        proc = launch_tunnel(provider, comfy_root, config["port"], config["subdomain"], TUNNEL_OUT, TUNNEL_ERR)
-        state["tunnel_pid"] = proc.pid
-        state["tunnel_started_at"] = time.time()
-        state["last_tunnel_error"] = ""
-        save_state(state)
-        reset_tunnel_retry()
-        ready_url = wait_for_public_tunnel_url(
-            (TUNNEL_OUT, TUNNEL_ERR),
-            config["subdomain"],
-            timeout_seconds=45.0,
-            use_expected_fallback=bool(normalize_subdomain(config.get("subdomain", ""))),
-            provider=provider,
-            config=config,
-        )
-        if ready_url:
-            state = load_state()
-            state["last_url"] = ready_url
+        last_error_text = ""
+        for launch_attempt in range(1, MAIN_TUNNEL_LAUNCH_ATTEMPTS + 1):
+            proc = launch_tunnel(provider, comfy_root, config["port"], config["subdomain"], TUNNEL_OUT, TUNNEL_ERR)
+            state["tunnel_pid"] = proc.pid
+            state["tunnel_started_at"] = time.time()
             state["last_tunnel_error"] = ""
             save_state(state)
-            return "Туннель готов."
-        mismatch_subdomain, mismatch_url = main_tunnel_subdomain_mismatch(config, active=True)
-        if mismatch_subdomain:
+            reset_tunnel_retry()
+            ready_url = wait_for_public_tunnel_url(
+                (TUNNEL_OUT, TUNNEL_ERR),
+                config["subdomain"],
+                timeout_seconds=180.0,
+                use_expected_fallback=not bool(normalize_subdomain(config.get("subdomain", ""))),
+                provider=provider,
+                config=config,
+            )
+            if ready_url:
+                state = load_state()
+                state["last_url"] = ready_url
+                state["last_tunnel_error"] = ""
+                save_state(state)
+                return "Туннель готов."
+            mismatch_subdomain, mismatch_url = main_tunnel_subdomain_mismatch(config, active=True)
+            if mismatch_subdomain:
+                stop_main_tunnel_only()
+                error_text = localtunnel_subdomain_mismatch_message(mismatch_subdomain, mismatch_url)
+                write_portal_log(
+                    "tunnel.subdomain.retry",
+                    error_text,
+                    requested=mismatch_subdomain,
+                    url=mismatch_url,
+                    attempt=launch_attempt,
+                    max_attempts=MAIN_TUNNEL_LAUNCH_ATTEMPTS,
+                )
+                last_error_text = error_text
+                if launch_attempt < MAIN_TUNNEL_LAUNCH_ATTEMPTS:
+                    time.sleep(min(4.0 * launch_attempt, 12.0))
+                    state = load_state()
+                    continue
+                schedule_tunnel_retry(error_text)
+                raise RuntimeError(error_text)
+            if not pid_is_running(proc.pid):
+                error_text = summarize_error_tail(TUNNEL_ERR) or "Туннель не успел подняться."
+                schedule_tunnel_retry(error_text)
+                raise RuntimeError(error_text)
+            detected_url = main_tunnel_candidate_url(config, load_state(), active=True)
             stop_main_tunnel_only()
-            error_text = localtunnel_subdomain_mismatch_message(mismatch_subdomain, mismatch_url)
-            write_portal_log("tunnel.subdomain.retry", error_text, requested=mismatch_subdomain, url=mismatch_url)
+            error_text = public_tunnel_probe_error_message(detected_url)
+            write_portal_log("tunnel.probe.failed.restart", error_text, url=detected_url)
             schedule_tunnel_retry(error_text)
             raise RuntimeError(error_text)
-        if not pid_is_running(proc.pid):
-            error_text = summarize_error_tail(TUNNEL_ERR) or "Туннель не успел подняться."
-            schedule_tunnel_retry(error_text)
-            raise RuntimeError(error_text)
-        detected_url = main_tunnel_candidate_url(config, load_state(), active=True)
-        stop_main_tunnel_only()
-        error_text = public_tunnel_probe_error_message(detected_url)
-        write_portal_log("tunnel.probe.failed.restart", error_text, url=detected_url)
-        schedule_tunnel_retry(error_text)
-        raise RuntimeError(error_text)
+        raise RuntimeError(last_error_text or "Туннель не успел подняться.")
 
 
 def start_friend_tunnel(link_id: str) -> str:
