@@ -4135,6 +4135,16 @@ def install_comfyui_manager(root: Path, progress=None) -> str:
     return "Manager установлен и проверен."
 
 
+def reinstall_comfyui_manager(root: Path, progress=None) -> str:
+    manager_dir = root / "ComfyUI" / "custom_nodes" / "comfyui-manager"
+    if manager_dir.exists():
+        if progress:
+            progress(0.05, "Удаляем старый ComfyUI Manager", build_setup_progress_meta("manager", "prepare", 0, "Переустановка"))
+        shutil.rmtree(manager_dir, ignore_errors=True)
+    invalidate_setup_status_cache()
+    return install_comfyui_manager(root, progress=progress)
+
+
 def pending_starter_model_specs(root: Path | None, specs: list[dict] | tuple[dict, ...] | None = None) -> list[dict]:
     specs_to_check = selectable_starter_model_specs() if specs is None else list(specs)
     if not root:
@@ -4333,6 +4343,20 @@ def install_manager_setup(progress=None) -> str:
     return result
 
 
+def reinstall_manager_setup(progress=None) -> str:
+    root = current_comfy_root()
+    if not root:
+        raise RuntimeError("Сначала установи Comfy.")
+    result = reinstall_comfyui_manager(
+        root,
+        progress=lambda fraction, detail, meta="": progress(detail, int(max(0, min(100, round(fraction * 100)))), meta) if progress else None,
+    )
+    invalidate_setup_status_cache()
+    if not manager_is_installed(root):
+        raise RuntimeError("ComfyUI Manager не установлен: папка Manager не найдена после переустановки.")
+    return result
+
+
 def install_single_node_setup(node_identifier: str, progress=None) -> str:
     root = current_comfy_root()
     if not root:
@@ -4513,6 +4537,110 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
         results.append(f"{spec['title']} установлен")
         if progress:
             progress(index / total_count, f"{spec['title']} установлен", build_setup_progress_meta(row_key, "done", 100, "Нода проверена"))
+    return results
+
+
+def update_installed_nodes(root: Path, progress=None) -> list[str]:
+    custom_nodes_dir = root / "ComfyUI" / "custom_nodes"
+    custom_nodes_dir.mkdir(parents=True, exist_ok=True)
+    workflow_specs, _, _ = workflow_required_node_specs()
+    specs_to_check = list(workflow_specs or REQUIRED_NODE_SPECS)
+    update_targets: list[tuple[Path, str, str]] = []
+    seen_paths: set[str] = set()
+    for spec in specs_to_check:
+        if not node_is_installed(root, spec):
+            continue
+        target_dir = node_install_path(root, spec)
+        if not target_dir.exists():
+            for candidate in node_candidate_paths(root, spec):
+                if candidate.exists():
+                    target_dir = candidate
+                    break
+        if not (target_dir / ".git").exists():
+            continue
+        try:
+            key = str(target_dir.resolve()).lower()
+        except Exception:
+            key = str(target_dir).lower()
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        update_targets.append((target_dir, str(spec["title"]), f"node:{spec['folder']}"))
+    try:
+        custom_node_children = sorted((item for item in custom_nodes_dir.iterdir() if item.is_dir()), key=lambda item: item.name.lower())
+    except Exception:
+        custom_node_children = []
+    for target_dir in custom_node_children:
+        if not (target_dir / ".git").exists():
+            continue
+        try:
+            key = str(target_dir.resolve()).lower()
+        except Exception:
+            key = str(target_dir).lower()
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        update_targets.append((target_dir, target_dir.name, ""))
+    results: list[str] = []
+    if not update_targets:
+        if progress:
+            progress(1.0, "Git-ноды в custom_nodes не найдены", "")
+        return ["Git-ноды в custom_nodes не найдены."]
+    total_count = len(update_targets)
+    python_bin = root / "python_embeded" / "python.exe"
+    for index, (target_dir, title, row_key) in enumerate(update_targets, start=1):
+        if progress:
+            progress((index - 1) / total_count, f"Обновляем {title}", build_setup_progress_meta(row_key, "update", None, "git pull") if row_key else "git pull")
+        try:
+            run_hidden_process_with_retries(
+                ["git", "pull", "--ff-only"],
+                target_dir,
+                f"Не удалось обновить {title}",
+                status_cb=(
+                    None
+                    if not progress
+                    else lambda text, node_title=title, current_row_key=row_key: progress(
+                        (index - 1 + 0.25) / total_count,
+                        f"Обновляем {node_title}",
+                        build_setup_progress_meta(current_row_key, "update", None, text) if current_row_key else text,
+                    )
+                ),
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            results.append(message)
+            if progress:
+                progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "git pull не удался") if row_key else "git pull не удался")
+            continue
+        requirements_path = target_dir / "requirements.txt"
+        if requirements_path.exists() and python_bin.exists():
+            if progress:
+                progress((index - 1 + 0.65) / total_count, f"Обновляем зависимости {title}", build_setup_progress_meta(row_key, "deps", None, "pip install") if row_key else "pip install")
+            try:
+                run_hidden_process_with_retries(
+                    [str(python_bin), "-s", "-m", "pip", "install", "-r", str(requirements_path)],
+                    target_dir,
+                    f"Не удалось обновить зависимости {title}",
+                    status_cb=(
+                        None
+                        if not progress
+                        else lambda text, node_title=title, current_row_key=row_key: progress(
+                            (index - 1 + 0.75) / total_count,
+                            f"Обновляем зависимости {node_title}",
+                            build_setup_progress_meta(current_row_key, "deps", None, text) if current_row_key else text,
+                        )
+                    ),
+                )
+            except RuntimeError as exc:
+                message = str(exc)
+                results.append(message)
+                if progress:
+                    progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "pip install не удался") if row_key else "pip install не удался")
+                continue
+        invalidate_setup_status_cache()
+        results.append(f"{title} обновлена")
+        if progress:
+            progress(index / total_count, f"{title} обновлена", build_setup_progress_meta(row_key, "done", 100, "Готово") if row_key else "Готово")
     return results
 
 
@@ -4712,6 +4840,18 @@ def install_nodes_setup(progress=None) -> str:
         specs=missing_node_specs_list,
     )
     assert_nodes_verified(root)
+    invalidate_setup_status_cache()
+    return " ".join(messages)
+
+
+def update_nodes_setup(progress=None) -> str:
+    root = current_comfy_root()
+    if not root:
+        raise RuntimeError("Сначала установи Comfy.")
+    messages = update_installed_nodes(
+        root,
+        progress=lambda fraction, detail, meta="": progress(detail, int(max(0, min(100, round(fraction * 100)))), meta) if progress else None,
+    )
     invalidate_setup_status_cache()
     return " ".join(messages)
 
@@ -5337,6 +5477,8 @@ def security_incident_is_startup_import_false_positive(incident: object) -> bool
     if "custom_nodes" not in text:
         return False
     if "(import failed)" in text:
+        return True
+    if "file " in text and ", line " in text and " in <module>" in text:
         return True
     if "__init__.py" not in text:
         return False
@@ -8406,6 +8548,8 @@ class LaunchChoiceDialog(QDialog):
 
 class ComfySetupPage(QWidget):
     install_requested = Signal(str)
+    nodes_update_requested = Signal()
+    manager_reinstall_requested = Signal()
     pause_requested = Signal(str)
     cancel_requested = Signal(str)
     model_choices_changed = Signal(object)
@@ -8493,6 +8637,34 @@ class ComfySetupPage(QWidget):
         manual_layout.addWidget(self.manual_download_button, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.manual_card.hide()
 
+        self.maintenance_card = QFrame()
+        self.maintenance_card.setObjectName("setupMaintenanceCard")
+        maintenance_layout = QHBoxLayout(self.maintenance_card)
+        maintenance_layout.setContentsMargins(16, 14, 16, 14)
+        maintenance_layout.setSpacing(12)
+        maintenance_text_layout = QVBoxLayout()
+        maintenance_text_layout.setSpacing(2)
+        self.maintenance_title = QLabel("Обслуживание")
+        self.maintenance_title.setObjectName("setupMaintenanceTitle")
+        self.maintenance_hint = QLabel("Отдельные действия для уже установленной portable-сборки.")
+        self.maintenance_hint.setObjectName("setupMaintenanceHint")
+        self.maintenance_hint.setWordWrap(True)
+        maintenance_text_layout.addWidget(self.maintenance_title)
+        maintenance_text_layout.addWidget(self.maintenance_hint)
+        self.nodes_update_button = QPushButton("Обновить ноды")
+        self.nodes_update_button.setObjectName("setupManualButton")
+        self.nodes_update_button.setCursor(Qt.PointingHandCursor)
+        self.nodes_update_button.setFixedHeight(38)
+        self.nodes_update_button.clicked.connect(self.nodes_update_requested.emit)
+        self.manager_reinstall_button = QPushButton("Переустановить Manager")
+        self.manager_reinstall_button.setObjectName("setupManualButton")
+        self.manager_reinstall_button.setCursor(Qt.PointingHandCursor)
+        self.manager_reinstall_button.setFixedHeight(38)
+        self.manager_reinstall_button.clicked.connect(self.manager_reinstall_requested.emit)
+        maintenance_layout.addLayout(maintenance_text_layout, 1)
+        maintenance_layout.addWidget(self.nodes_update_button, 0, Qt.AlignRight | Qt.AlignVCenter)
+        maintenance_layout.addWidget(self.manager_reinstall_button, 0, Qt.AlignRight | Qt.AlignVCenter)
+
         self.model_choice_card = QFrame()
         self.model_choice_card.setObjectName("setupModelChoiceCard")
         model_choice_layout = QVBoxLayout(self.model_choice_card)
@@ -8555,6 +8727,7 @@ class ComfySetupPage(QWidget):
             self.status_rows[key] = row
             self.nodes_section.add_row(row)
 
+        content_layout.addWidget(self.maintenance_card)
         content_layout.addWidget(self.model_choice_card)
         content_layout.addWidget(self.comfy_section)
         content_layout.addWidget(self.nodes_section)
@@ -8610,6 +8783,27 @@ class ComfySetupPage(QWidget):
             }}
             QPushButton#setupManualButton:hover {{
                 background: {self.theme.soft_btn_hover};
+            }}
+            QPushButton#setupManualButton:disabled {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.muted};
+                border: 1px solid {self.theme.border};
+            }}
+            QFrame#setupMaintenanceCard {{
+                background: {self.theme.panel_bg};
+                border: 1px solid {self.theme.border};
+                border-radius: 20px;
+            }}
+            QLabel#setupMaintenanceTitle {{
+                color: {self.theme.text};
+                font-size: 14px;
+                font-weight: 800;
+                background: transparent;
+            }}
+            QLabel#setupMaintenanceHint {{
+                color: {self.theme.muted};
+                font-size: 12px;
+                background: transparent;
             }}
             QFrame#setupModelChoiceCard {{
                 background: {self.theme.panel_bg};
@@ -8689,6 +8883,11 @@ class ComfySetupPage(QWidget):
         self.status_rows["comfy"].set_link(str(status.get("source_url", "") or COMFYUI_PORTABLE_URL))
         self.status_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
         self.status_rows["manager"].set_install_enabled(comfy_ready and not bool(self.active_scope))
+        maintenance_enabled = comfy_ready and not bool(self.active_scope)
+        self.nodes_update_button.setEnabled(maintenance_enabled)
+        self.manager_reinstall_button.setEnabled(maintenance_enabled)
+        self.nodes_update_button.setCursor(Qt.PointingHandCursor if maintenance_enabled else Qt.ArrowCursor)
+        self.manager_reinstall_button.setCursor(Qt.PointingHandCursor if maintenance_enabled else Qt.ArrowCursor)
         if comfy_ready and status.get("comfy_update_available"):
             self.status_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Есть необязательное обновление ComfyUI."), "update")
         else:
@@ -8743,8 +8942,8 @@ class ComfySetupPage(QWidget):
             self.nodes_section.set_summary("Сначала поставь Comfy, потом можно добавлять ноды.")
         else:
             self.nodes_section.set_summary("Все ноды уже на месте." if nodes_missing == 0 else f"Нужно доставить нод: {nodes_missing}.")
-        comfy_busy = self.active_scope in {"comfy", "manager"} or self.active_scope.startswith("model")
-        nodes_busy = self.active_scope == "nodes" or self.active_scope.startswith("node:")
+        comfy_busy = self.active_scope in {"comfy", "manager", "manager_reinstall"} or self.active_scope.startswith("model")
+        nodes_busy = self.active_scope in {"nodes", "nodes_update"} or self.active_scope.startswith("node:")
         if comfy_busy:
             self.comfy_section.set_action_state("Установка...", False, True)
         else:
@@ -8752,7 +8951,7 @@ class ComfySetupPage(QWidget):
             comfy_action = "Обновить Comfy" if update_available and comfy_missing == 0 else "Установить всё"
             self.comfy_section.set_action_state(
                 comfy_action if (comfy_missing or update_available) else "Все установлено",
-                (comfy_missing > 0 or update_available) and self.active_scope != "nodes" and not self.active_scope.startswith("model"),
+                (comfy_missing > 0 or update_available) and self.active_scope not in {"nodes", "nodes_update"} and not self.active_scope.startswith("model"),
                 False,
             )
         if nodes_busy:
@@ -8775,7 +8974,7 @@ class ComfySetupPage(QWidget):
             self.folder_label.setText(f"Папка установки: {self.install_target_path}" if self.install_target_path else "Папка пока не выбрана")
 
     def section_for_scope(self, scope: str) -> SetupSectionCard:
-        return self.nodes_section if scope == "nodes" or scope.startswith("node:") else self.comfy_section
+        return self.nodes_section if scope in {"nodes", "nodes_update"} or scope.startswith("node:") else self.comfy_section
 
     def begin_install(self, scope: str, eta_text: str) -> None:
         self.active_scope = scope
@@ -8786,9 +8985,9 @@ class ComfySetupPage(QWidget):
         self.refresh_status(cached_comfy_setup_status(force=True))
 
     def set_install_paused(self, paused: bool) -> None:
-        if self.active_scope in {"comfy", "manager"} or self.active_scope.startswith("model"):
+        if self.active_scope in {"comfy", "manager", "manager_reinstall"} or self.active_scope.startswith("model"):
             self.comfy_section.set_paused(paused)
-        elif self.active_scope == "nodes" or self.active_scope.startswith("node:"):
+        elif self.active_scope in {"nodes", "nodes_update"} or self.active_scope.startswith("node:"):
             self.nodes_section.set_paused(paused)
 
     def update_install_progress(self, scope: str, detail: str, percent: int, meta: str = "") -> None:
@@ -9264,6 +9463,8 @@ class MainWindow(QWidget):
         self.setup_page = ComfySetupPage(self.theme, cached_comfy_setup_status(self.config), self)
         self.setup_page_widget = self.setup_page
         self.setup_page.install_requested.connect(self.start_setup_install)
+        self.setup_page.nodes_update_requested.connect(lambda: self.start_setup_install("nodes_update"))
+        self.setup_page.manager_reinstall_requested.connect(lambda: self.start_setup_install("manager_reinstall"))
         self.setup_page.pause_requested.connect(self.toggle_setup_install_pause)
         self.setup_page.cancel_requested.connect(self.cancel_setup_install)
         self.setup_page.model_choices_changed.connect(self.on_setup_model_choices_changed)
@@ -11612,7 +11813,7 @@ class MainWindow(QWidget):
         status = cached_comfy_setup_status(self.config, force=True)
         if self.setup_page_widget is not None:
             self.setup_page_widget.refresh_status(status)
-        if scope in {"manager", "nodes"} and not status.get("comfy_ready"):
+        if scope in {"manager", "manager_reinstall", "nodes", "nodes_update"} and not status.get("comfy_ready"):
             self.install_setup_last_scope = scope
             self.install_setup_last_message = "Сначала установи Comfy."
             self.install_setup_last_error = True
@@ -11659,6 +11860,8 @@ class MainWindow(QWidget):
             missing = core_missing or update_available or force_comfy_update
         elif scope == "manager":
             missing = not status.get("manager_ready")
+        elif scope in {"manager_reinstall", "nodes_update"}:
+            missing = True
         else:
             missing = comfy_nodes_have_missing(status)
         if not missing:
@@ -11683,6 +11886,10 @@ class MainWindow(QWidget):
             self.install_setup_progress_detail = "Ставим Comfy и нужные файлы."
         elif scope == "manager":
             self.install_setup_progress_detail = "Ставим ComfyUI Manager."
+        elif scope == "manager_reinstall":
+            self.install_setup_progress_detail = "Переустанавливаем ComfyUI Manager."
+        elif scope == "nodes_update":
+            self.install_setup_progress_detail = "Обновляем ноды."
         else:
             self.install_setup_progress_detail = "Ставим ноды для воркфлоу."
         self.install_setup_progress_meta = f"Примерное время: {self.install_setup_eta}"
@@ -11695,7 +11902,15 @@ class MainWindow(QWidget):
         self.run_background(
             (lambda progress, current_parent=install_parent, force_update=force_comfy_update or update_available: install_comfy_core_setup(current_parent, progress, force_update=force_update))
             if scope == "comfy"
-            else ((lambda progress: install_manager_setup(progress)) if scope == "manager" else (lambda progress: install_nodes_setup(progress))),
+            else (
+                (lambda progress: install_manager_setup(progress))
+                if scope == "manager"
+                else (
+                    (lambda progress: reinstall_manager_setup(progress))
+                    if scope == "manager_reinstall"
+                    else ((lambda progress: update_nodes_setup(progress)) if scope == "nodes_update" else (lambda progress: install_nodes_setup(progress)))
+                )
+            ),
             job_kind=f"installsetup:{scope}",
             set_busy=False,
             show_toast=True,
