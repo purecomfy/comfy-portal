@@ -273,6 +273,7 @@ CUSTOM_NODES=(
   "Comfy Image Saver|comfy-image-saver|https://github.com/giriss/comfy-image-saver.git"
   "ComfyUI Image Saver|ComfyUI-Image-Saver|https://github.com/alexopus/ComfyUI-Image-Saver.git"
   "ComfyUI-FBCNN|ComfyUI-FBCNN|https://github.com/Miosp/ComfyUI-FBCNN.git"
+  "ComfyUI Lora Manager|ComfyUI-Lora-Manager|https://github.com/willmiao/ComfyUI-Lora-Manager.git"
   "ComfyUI PIX Nvidia RTX Deblur Denoise|ComfyUI-PIX_Nvidia_RTX_Deblur_Denoise|https://github.com/PixWizardry/ComfyUI-PIX_Nvidia_RTX_Deblur_Denoise.git"
   "comfyui-gps-supplements|comfyui-gps-supplements|https://github.com/Goshe-nite/comfyui-gps-supplements.git"
   "ComfyUI JPS Nodes|ComfyUI_JPS-Nodes|https://github.com/JPS-GER/ComfyUI_JPS-Nodes.git"

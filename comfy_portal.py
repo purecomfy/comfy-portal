@@ -708,6 +708,12 @@ REQUIRED_NODE_SPECS = (
         "aliases": ["ComfyUI-FBCNN", "FBCNN", "Miosp/ComfyUI-FBCNN"],
     },
     {
+        "title": "ComfyUI Lora Manager",
+        "folder": "ComfyUI-Lora-Manager",
+        "repo": "https://github.com/willmiao/ComfyUI-Lora-Manager.git",
+        "aliases": ["ComfyUI-Lora-Manager", "Lora Manager", "willmiao/ComfyUI-Lora-Manager"],
+    },
+    {
         "title": "ComfyUI PIX Nvidia RTX Deblur Denoise",
         "folder": "ComfyUI-PIX_Nvidia_RTX_Deblur_Denoise",
         "repo": "https://github.com/PixWizardry/ComfyUI-PIX_Nvidia_RTX_Deblur_Denoise.git",
