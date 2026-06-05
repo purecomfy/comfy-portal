@@ -5260,17 +5260,22 @@ def security_line_is_custom_node_import_status(lower: str) -> bool:
     )
 
 
+def security_line_is_python_traceback_frame(lower: str) -> bool:
+    return lower.startswith("file ") and ", line " in lower and " in <module>" in lower
+
+
 def detect_security_line(line: str, config: dict | None = None) -> dict | None:
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(line or "")).strip()
     if not text:
         return None
     lower = text.lower()
-    if security_line_is_custom_node_import_status(lower):
+    if security_line_is_custom_node_import_status(lower) or security_line_is_python_traceback_frame(lower):
         return None
     config = config or load_config()
     comfy_root = current_comfy_root(config)
-    has_action = any(marker in lower for marker in SECURITY_ACTION_MARKERS)
-    has_weak_action = any(marker in lower for marker in SECURITY_WEAK_ACTION_MARKERS)
+    action_lower = SECURITY_PATH_PATTERN.sub(" ", lower)
+    has_action = any(marker in action_lower for marker in SECURITY_ACTION_MARKERS)
+    has_weak_action = any(marker in action_lower for marker in SECURITY_WEAK_ACTION_MARKERS)
     paths = [clean_security_path(match.group(0)) for match in SECURITY_PATH_PATTERN.finditer(text)]
     dangerous_paths = [path for path in paths if security_path_is_dangerous(path, comfy_root)]
     dangerous_extension_paths = [path for path in dangerous_paths if security_path_has_dangerous_extension(path)]
@@ -12282,6 +12287,7 @@ class MainWindow(QWidget):
         box.setInformativeText(info)
         logs_button = box.addButton("Открыть логи", QMessageBox.ActionRole)
         local_button = box.addButton("Запустить локально без туннеля", QMessageBox.ActionRole)
+        ignore_button = box.addButton("Игнорировать", QMessageBox.ActionRole)
         close_button = box.addButton("Понятно", QMessageBox.AcceptRole)
         box.exec()
         clicked = box.clickedButton()
@@ -12292,6 +12298,11 @@ class MainWindow(QWidget):
             clear_security_incident()
             self.security_guard_inflight = False
             self.run_background(start_comfy_if_needed, job_kind="securitylocal", set_busy=True, show_toast=True)
+        elif clicked == ignore_button:
+            clear_security_incident()
+            self.security_guard_inflight = False
+            write_portal_log("security.incident.ignored", reason, path=path, line=line)
+            self.request_refresh_view()
         elif clicked == close_button:
             self.request_refresh_view()
 
