@@ -402,7 +402,7 @@ MODELS=(
   "RedCraft ErnieRedmix UNet|redcraft_ernieRedmix.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2891710?type=Diffusion%20Model&format=Other&fp=fp8|redcraft"
   "RedCraft ErnieRedmix Text Encoder|redcraft_ernieRedmix_txt.safetensors|ComfyUI/models/text_encoders|https://civitai.red/api/download/models/2891710?fileId=2773413|redcraft"
   "Flux2 Tiny VAE|flux2-tiny-vae.safetensors|ComfyUI/models/vae|https://civitai.red/api/download/models/2891710?fileId=2773335|redcraft"
-  "MiaoMiao Harem Anima Base UNet|miaomiaoHarem_animaBase.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/2967371?fileId=2846844|miaomiao"
+  "MiaoMiao Harem Anima Base UNet|miaomiaoHarem_animaBase.safetensors|ComfyUI/models/unet|https://civitai.red/api/download/models/3004063?fileId=2883413|miaomiao"
   "MiaoMiao Harem Anima Base Text Encoder|anima_baseV10_txt.safetensors|ComfyUI/models/text_encoders|https://civitai.red/api/download/models/2967371?fileId=2846833|miaomiao"
   "MiaoMiao Harem Anima Base VAE|qwen_image_vae.safetensors|ComfyUI/models/vae|https://civitai.red/api/download/models/2967371?fileId=2846827|miaomiao"
   "BiRefNet Background Removal|birefnet.safetensors|ComfyUI/models/background_removal|https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors|always"

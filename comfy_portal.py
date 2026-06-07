@@ -368,11 +368,11 @@ STARTER_MODEL_SPECS = (
     {
         "title": "MiaoMiao Harem Anima Base UNet",
         "filename": "miaomiaoHarem_animaBase.safetensors",
-        "url": "https://civitai.red/api/download/models/2967371?fileId=2846844",
+        "url": "https://civitai.red/api/download/models/3004063?fileId=2883413",
         "relative_dir": ("ComfyUI", "models", "unet"),
         "model_choice_key": "miaomiao",
         "detect_names": ("miaomiaoHarem_animaBase.safetensors",),
-        "detect_contains_any": ("miaomiaoharem_animabase", "miaomiao", "anima_base", "2967371", "2846844"),
+        "detect_contains_any": ("miaomiaoharem_animabase", "miaomiao", "anima_base", "3004063", "2883413"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
