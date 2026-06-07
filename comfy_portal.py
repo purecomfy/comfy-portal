@@ -2999,6 +2999,56 @@ def run_hidden_process_utf8(command: list[str], cwd: Path, timeout: float | None
     )
 
 
+def pip_error_is_uninstall_no_record(text: str) -> bool:
+    lower = str(text or "").lower()
+    return (
+        "uninstall-no-record-file" in lower
+        or "no record file was found" in lower
+        or ("cannot uninstall" in lower and "record" in lower)
+    )
+
+
+def pip_command_with_ignore_installed(command: list[str]) -> list[str]:
+    updated = list(command)
+    if "--ignore-installed" in updated:
+        return updated
+    try:
+        install_index = updated.index("install")
+    except ValueError:
+        updated.append("--ignore-installed")
+        return updated
+    updated.insert(install_index + 1, "--ignore-installed")
+    return updated
+
+
+def run_pip_process_with_uninstall_fallback(
+    command: list[str],
+    cwd: Path,
+    error_prefix: str,
+    status_cb=None,
+    log_event: str = "pip.install",
+) -> subprocess.CompletedProcess:
+    try:
+        return run_hidden_process_with_retries(command, cwd, error_prefix, status_cb=status_cb)
+    except RuntimeError as exc:
+        error_text = str(exc)
+        if not pip_error_is_uninstall_no_record(error_text):
+            raise
+        fallback_command = pip_command_with_ignore_installed(command)
+        write_portal_log(
+            f"{log_event}.ignore_installed_retry",
+            error_text,
+            cwd=cwd,
+            command=" ".join(fallback_command),
+        )
+        if status_cb:
+            try:
+                status_cb("pip не смог удалить пакет без RECORD. Повторяем с --ignore-installed...")
+            except Exception:
+                pass
+        return run_hidden_process_with_retries(fallback_command, cwd, error_prefix, status_cb=status_cb)
+
+
 def embedded_python_package_version(python_bin: Path, package_name: str) -> str:
     code = (
         "import importlib.metadata as m\n"
@@ -3198,6 +3248,21 @@ def embedded_pip_install(root: Path, packages: list[str]) -> None:
         write_portal_log("comfy.deps.install.timeout", str(exc), packages=";".join(packages), root=root)
         raise RuntimeError("Не удалось автоматически обновить зависимости ComfyUI: pip install не завершился вовремя.") from exc
     output = compact_process_error(result)
+    if result.returncode != 0 and pip_error_is_uninstall_no_record(output):
+        fallback_command = pip_command_with_ignore_installed(command)
+        write_portal_log(
+            "comfy.deps.install.ignore_installed_retry",
+            output,
+            packages=";".join(packages),
+            root=root,
+            command=" ".join(fallback_command),
+        )
+        try:
+            result = run_hidden_process_utf8(fallback_command, root, timeout=20 * 60)
+        except subprocess.TimeoutExpired as exc:
+            write_portal_log("comfy.deps.install.timeout", str(exc), packages=";".join(packages), root=root, fallback="ignore-installed")
+            raise RuntimeError("Не удалось автоматически обновить зависимости ComfyUI: pip install --ignore-installed не завершился вовремя.") from exc
+        output = compact_process_error(result)
     if result.returncode != 0:
         write_portal_log("comfy.deps.install.error", output, packages=";".join(packages), root=root, returncode=result.returncode)
         raise RuntimeError(f"Не удалось автоматически обновить зависимости ComfyUI: {output}")
@@ -4501,7 +4566,7 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
             if progress:
                 progress((index - 1 + 0.7) / total_count, f"Ставим зависимости для {spec['title']}", build_setup_progress_meta(row_key, "deps", None, "pip install"))
             try:
-                run_hidden_process_with_retries(
+                run_pip_process_with_uninstall_fallback(
                     [str(python_bin), "-s", "-m", "pip", "install", "-r", str(requirements_path)],
                     target_dir,
                     f"Не удалось поставить зависимости {spec['title']}",
@@ -4514,6 +4579,7 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
                             build_setup_progress_meta(row_key, "deps", None, text),
                         )
                     ),
+                    log_event="node.deps.install",
                 )
             except RuntimeError as exc:
                 message = str(exc)
@@ -4617,7 +4683,7 @@ def update_installed_nodes(root: Path, progress=None) -> list[str]:
             if progress:
                 progress((index - 1 + 0.65) / total_count, f"Обновляем зависимости {title}", build_setup_progress_meta(row_key, "deps", None, "pip install") if row_key else "pip install")
             try:
-                run_hidden_process_with_retries(
+                run_pip_process_with_uninstall_fallback(
                     [str(python_bin), "-s", "-m", "pip", "install", "-r", str(requirements_path)],
                     target_dir,
                     f"Не удалось обновить зависимости {title}",
@@ -4630,6 +4696,7 @@ def update_installed_nodes(root: Path, progress=None) -> list[str]:
                             build_setup_progress_meta(current_row_key, "deps", None, text) if current_row_key else text,
                         )
                     ),
+                    log_event="node.deps.update",
                 )
             except RuntimeError as exc:
                 message = str(exc)
