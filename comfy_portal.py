@@ -5137,6 +5137,10 @@ def clear_logs(*paths: Path) -> None:
             path.unlink()
         except FileNotFoundError:
             pass
+        except PermissionError as exc:
+            write_portal_log("logs.clear.locked", str(exc), path=str(path))
+        except OSError as exc:
+            write_portal_log("logs.clear.failed", str(exc), path=str(path))
 
 
 def ensure_layout(config: dict | None = None) -> Path:
@@ -5211,6 +5215,11 @@ def cached_process_scan(kind: str, force: bool = False) -> list[int]:
     else:
         cache["pids"] = [pid for pid in cache["pids"] if pid_is_running(pid)]
     return cache["pids"]
+
+
+def refresh_runtime_process_caches() -> None:
+    for kind in ("comfy", "tunnel", "friend_tunnel"):
+        cached_process_scan(kind, force=True)
 
 
 def kill_process_tree(proc: psutil.Process) -> None:
@@ -5810,10 +5819,13 @@ def public_comfy_full_probe(url: str, require_prompt: bool = False) -> bool:
     clean_url = str(url or "").strip().rstrip("/")
     if not clean_url:
         return False
-    http_ok = public_comfy_http_ready(clean_url, timeout_seconds=PUBLIC_TUNNEL_HTTP_TIMEOUT)
+    http_ok = public_comfy_http_ready(clean_url, timeout_seconds=min(PUBLIC_TUNNEL_HTTP_TIMEOUT, 20.0))
     if not http_ok:
         write_portal_log("tunnel.probe.full", url=clean_url, http=False, ws=False, prompt=False)
         return False
+    if not require_prompt:
+        write_portal_log("tunnel.probe.full", url=clean_url, http=True, ws="skipped", prompt="skipped")
+        return True
     prompt_ok = public_comfy_prompt_ready(clean_url, timeout_seconds=PUBLIC_TUNNEL_PROMPT_TIMEOUT)
     write_portal_log("tunnel.probe.full", url=clean_url, http=True, ws="skipped", prompt=prompt_ok)
     if not prompt_ok:
@@ -6216,6 +6228,14 @@ def start_comfy_if_needed() -> str:
 
         check_comfy_torch_preflight(comfy_root, config)
         repair_comfy_python_dependencies(comfy_root)
+        state = load_state()
+        port_open = port_is_open(config["port"])
+        comfy_ready = comfy_http_ready(config["port"]) if port_open else False
+        comfy_proc = any_comfy_process(state) or bool(cached_process_scan("comfy", force=True))
+        if comfy_ready or comfy_proc:
+            return "ComfyUI СѓР¶Рµ Р°РєС‚РёРІРµРЅ."
+        if port_open and not comfy_ready:
+            raise RuntimeError(f"РџРѕСЂС‚ {config['port']} СѓР¶Рµ Р·Р°РЅСЏС‚ РґСЂСѓРіРёРј РїСЂРёР»РѕР¶РµРЅРёРµРј.")
         clear_logs(COMFY_OUT, COMFY_ERR)
         out = open(COMFY_OUT, "w", encoding="utf-8")
         err = open(COMFY_ERR, "w", encoding="utf-8")
@@ -12143,7 +12163,8 @@ class MainWindow(QWidget):
                 self.action_visual_state = "start"
 
     def on_action_button_clicked(self) -> None:
-        snap = self.latest_snap or runtime_snapshot(include_logs=self.logs_view_open)
+        refresh_runtime_process_caches()
+        snap = runtime_snapshot(include_logs=self.logs_view_open)
         should_stop = snap.get("desired_running") or snap["comfy_active"] or snap["tunnel_active"] or snap["friend_active"]
         if self.busy:
             if should_stop and not self.stop_inflight:
