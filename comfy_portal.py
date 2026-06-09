@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.1"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -134,8 +134,32 @@ FRIEND_LINK_PATTERN = re.compile(r"friendscomfy(?:\d{6}|\d{8})")
 SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9-]{3,63}$")
 SUBDOMAIN_ARG_PATTERN = re.compile(r"--subdomain\s+([a-z0-9-]+)")
 PUBLIC_URL_PATTERN = re.compile(r"https://([a-z0-9-]+)\.loca\.lt")
-COMFYUI_PORTABLE_URL = "https://github.com/Comfy-Org/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z"
-COMFYUI_PORTABLE_ARCHIVE_NAME = "ComfyUI_windows_portable_nvidia.7z"
+COMFY_BACKEND_NVIDIA = "nvidia"
+COMFY_BACKEND_AMD = "amd"
+COMFY_BACKEND_CPU = "cpu"
+DEFAULT_COMFY_BACKEND = COMFY_BACKEND_NVIDIA
+COMFY_BACKEND_SPECS = {
+    COMFY_BACKEND_NVIDIA: {
+        "title": "NVIDIA",
+        "label": "NVIDIA CUDA portable",
+        "archive_backend": COMFY_BACKEND_NVIDIA,
+        "archive_name": "ComfyUI_windows_portable_nvidia.7z",
+    },
+    COMFY_BACKEND_AMD: {
+        "title": "AMD",
+        "label": "AMD ROCm portable",
+        "archive_backend": COMFY_BACKEND_AMD,
+        "archive_name": "ComfyUI_windows_portable_amd.7z",
+    },
+    COMFY_BACKEND_CPU: {
+        "title": "CPU",
+        "label": "CPU mode portable",
+        "archive_backend": COMFY_BACKEND_NVIDIA,
+        "archive_name": "ComfyUI_windows_portable_nvidia.7z",
+    },
+}
+COMFYUI_PORTABLE_ARCHIVE_NAME = COMFY_BACKEND_SPECS[COMFY_BACKEND_NVIDIA]["archive_name"]
+COMFYUI_PORTABLE_URL = f"https://github.com/Comfy-Org/ComfyUI/releases/latest/download/{COMFYUI_PORTABLE_ARCHIVE_NAME}"
 COMFY_PACKAGE_MARKER_NAME = ".comfy_portal_source.json"
 CUSTOM_COMFY_ARCHIVE_NAME = "ComfyPortal.custom_comfy.7z"
 CUSTOM_COMFY_URL_FILENAME = "ComfyPortal.custom_comfy_url.txt"
@@ -166,9 +190,9 @@ MODEL_SIZE_HINTS = {
     "RedCraft ErnieRedmix UNet": 4 * 1024 * 1024 * 1024,
     "RedCraft ErnieRedmix Text Encoder": 8 * 1024 * 1024 * 1024,
     "Flux2 Tiny VAE": 350 * 1024 * 1024,
-    "MiaoMiao Harem Anima Base UNet": 4 * 1024 * 1024 * 1024,
-    "MiaoMiao Harem Anima Base Text Encoder": 2 * 1024 * 1024 * 1024,
-    "MiaoMiao Harem Anima Base VAE": 300 * 1024 * 1024,
+    "MiaoMiao Harem Anima 11 UNet": 4 * 1024 * 1024 * 1024,
+    "MiaoMiao Harem Anima 11 Text Encoder": 2 * 1024 * 1024 * 1024,
+    "MiaoMiao Harem Anima 11 VAE": 300 * 1024 * 1024,
     "bbox/face_yolov8m.pt": 60 * 1024 * 1024,
     "bbox/face_yolov9c.pt": 50 * 1024 * 1024,
     "bbox/Eyeful_v2-Paired.pt": 90 * 1024 * 1024,
@@ -207,9 +231,9 @@ MODEL_CHOICE_SPECS = (
     },
     {
         "key": "miaomiao",
-        "title": "MiaoMiao Harem Anima Base",
+        "title": "MiaoMiao Harem Anima 11",
         "weight": "medium",
-        "hint": "Anima model: UNet + text encoder + VAE",
+        "hint": "Anima 11 model: UNet + text encoder + VAE",
     },
 )
 DEFAULT_SELECTED_MODEL_CHOICES = tuple(choice["key"] for choice in MODEL_CHOICE_SPECS)
@@ -228,6 +252,10 @@ COMFY_LAUNCH_MODES = {
     "bf16": {
         "title": "BF16",
         "args": ["--windows-standalone-build", "--listen", "--bf16-unet", "--bf16-vae", "--bf16-text-enc"],
+    },
+    "lowvram": {
+        "title": "Low VRAM",
+        "args": ["--windows-standalone-build", "--listen", "--lowvram", "--disable-pinned-memory"],
     },
     "cpu": {
         "title": "CPU",
@@ -366,27 +394,27 @@ STARTER_MODEL_SPECS = (
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "MiaoMiao Harem Anima Base UNet",
-        "filename": "miaomiaoHarem_animaBase.safetensors",
+        "title": "MiaoMiao Harem Anima 11 UNet",
+        "filename": "miaomiaoHarem_anima11.safetensors",
         "url": "https://civitai.red/api/download/models/3004063?fileId=2883413",
         "relative_dir": ("ComfyUI", "models", "unet"),
         "model_choice_key": "miaomiao",
-        "detect_names": ("miaomiaoHarem_animaBase.safetensors",),
-        "detect_contains_any": ("miaomiaoharem_animabase", "miaomiao", "anima_base", "3004063", "2883413"),
+        "detect_names": ("miaomiaoHarem_anima11.safetensors", "miaomiaoHarem_animaBase.safetensors"),
+        "detect_contains_any": ("miaomiaoharem_anima11", "miaomiaoharem_animabase", "miaomiao", "anima11", "anima_base", "3004063", "2883413"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "MiaoMiao Harem Anima Base Text Encoder",
-        "filename": "anima_baseV10_txt.safetensors",
-        "url": "https://civitai.red/api/download/models/2967371?fileId=2846833",
+        "title": "MiaoMiao Harem Anima 11 Text Encoder",
+        "filename": "miaomiaoHarem_anima11_txt.safetensors",
+        "url": "https://civitai.red/api/download/models/3004063?fileId=2883408",
         "relative_dir": ("ComfyUI", "models", "text_encoders"),
         "model_choice_key": "miaomiao",
-        "detect_names": ("anima_baseV10_txt.safetensors", "miaomiaoHarem_animaBase.safetensors"),
-        "detect_contains_any": ("anima_basev10_txt", "miaomiaoharem_animabase", "miaomiao", "2846833"),
+        "detect_names": ("miaomiaoHarem_anima11_txt.safetensors",),
+        "detect_contains_any": ("miaomiaoharem_anima11_txt", "2883408"),
         "detect_extensions": (".safetensors", ".ckpt"),
     },
     {
-        "title": "MiaoMiao Harem Anima Base VAE",
+        "title": "MiaoMiao Harem Anima 11 VAE",
         "filename": "qwen_image_vae.safetensors",
         "url": "https://civitai.red/api/download/models/2967371?fileId=2846827",
         "relative_dir": ("ComfyUI", "models", "vae"),
@@ -1086,6 +1114,7 @@ def default_config(check_subdomain_availability: bool = False) -> dict:
         "subdomain": "",
         "tunnel_provider": DEFAULT_TUNNEL_PROVIDER,
         "theme": "light",
+        "comfy_backend": DEFAULT_COMFY_BACKEND,
         "launch_mode": DEFAULT_LAUNCH_MODE,
         "extra_launch_args": DEFAULT_EXTRA_LAUNCH_ARGS,
         "launch_mode_confirmed": False,
@@ -1261,7 +1290,10 @@ def load_config() -> dict:
     stored_keys = decode_api_keys_b64(existing_raw.get("civitai_api_keys_b64", []))
     config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys)
     config["tunnel_provider"] = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
-    config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+    if "comfy_backend" not in existing_raw:
+        config["comfy_backend"] = COMFY_BACKEND_CPU if normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE)) == "cpu" else DEFAULT_COMFY_BACKEND
+    config["comfy_backend"] = normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+    config["launch_mode"] = normalize_launch_mode_for_backend(config.get("launch_mode", DEFAULT_LAUNCH_MODE), config["comfy_backend"])
     if "extra_launch_args" not in existing_raw:
         config["extra_launch_args"] = DEFAULT_EXTRA_LAUNCH_ARGS
     else:
@@ -1286,7 +1318,8 @@ def save_config(config: dict) -> None:
     raw_keys = normalize_api_key_items(config.pop("civitai_api_keys", ""))
     config["civitai_api_keys_b64"] = encode_api_keys_b64(stored_keys + legacy_keys + raw_keys)
     config["tunnel_provider"] = normalize_tunnel_provider(config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
-    config["launch_mode"] = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+    config["comfy_backend"] = normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+    config["launch_mode"] = normalize_launch_mode_for_backend(config.get("launch_mode", DEFAULT_LAUNCH_MODE), config["comfy_backend"])
     config["extra_launch_args"] = normalize_extra_launch_args(config.get("extra_launch_args", ""))
     config["launch_mode_confirmed"] = bool(config.get("launch_mode_confirmed", False))
     config["onboarding_completed"] = bool(config.get("onboarding_completed", False))
@@ -1297,6 +1330,47 @@ def save_config(config: dict) -> None:
 
 def normalize_tunnel_provider(value: object) -> str:
     return TUNNEL_PROVIDER_LOCALTUNNEL
+
+
+def normalize_comfy_backend(value: object) -> str:
+    clean = str(value or "").strip().lower()
+    legacy_map = {
+        "gpu": COMFY_BACKEND_NVIDIA,
+        "cuda": COMFY_BACKEND_NVIDIA,
+        "nvidia_cuda": COMFY_BACKEND_NVIDIA,
+        "rocm": COMFY_BACKEND_AMD,
+        "amd_rocm": COMFY_BACKEND_AMD,
+    }
+    clean = legacy_map.get(clean, clean)
+    return clean if clean in COMFY_BACKEND_SPECS else DEFAULT_COMFY_BACKEND
+
+
+def comfy_archive_backend(backend: object) -> str:
+    clean = normalize_comfy_backend(backend)
+    return str(COMFY_BACKEND_SPECS[clean].get("archive_backend", clean))
+
+
+def comfy_backend_title(backend: object) -> str:
+    return str(COMFY_BACKEND_SPECS[normalize_comfy_backend(backend)]["title"])
+
+
+def comfy_backend_archive_name(backend: object) -> str:
+    archive_backend = comfy_archive_backend(backend)
+    return str(COMFY_BACKEND_SPECS[archive_backend]["archive_name"])
+
+
+def comfy_backend_portable_url(backend: object) -> str:
+    archive_name = comfy_backend_archive_name(backend)
+    return f"https://github.com/Comfy-Org/ComfyUI/releases/latest/download/{archive_name}"
+
+
+def comfy_backend_description(backend: object) -> str:
+    backend = normalize_comfy_backend(backend)
+    if backend == COMFY_BACKEND_AMD:
+        return "AMD ROCm portable. Нужны Windows 11, совместимая Radeon/Ryzen AI и AMD PyTorch/ROCm driver."
+    if backend == COMFY_BACKEND_CPU:
+        return "CPU mode. Работает без GPU, но генерация будет медленной."
+    return "NVIDIA CUDA portable. Нужны NVIDIA Driver и CUDA PyTorch внутри portable."
 
 
 def tunnel_provider_title(provider: object) -> str:
@@ -1316,6 +1390,23 @@ def normalize_launch_mode(value: str) -> str:
     }
     clean = legacy_map.get(clean, clean)
     return clean if clean in COMFY_LAUNCH_MODES else DEFAULT_LAUNCH_MODE
+
+
+def launch_modes_for_backend(backend: object) -> tuple[str, ...]:
+    backend = normalize_comfy_backend(backend)
+    if backend == COMFY_BACKEND_AMD:
+        return ("fp16", "bf16", "lowvram", "cpu")
+    if backend == COMFY_BACKEND_CPU:
+        return ("cpu",)
+    return ("fp16", "fp8", "bf16", "lowvram", "cpu")
+
+
+def normalize_launch_mode_for_backend(mode: object, backend: object) -> str:
+    clean = normalize_launch_mode(str(mode or ""))
+    allowed = launch_modes_for_backend(backend)
+    if clean in allowed:
+        return clean
+    return "cpu" if normalize_comfy_backend(backend) == COMFY_BACKEND_CPU else "fp16"
 
 
 def parse_extra_launch_args(value: object) -> list[str]:
@@ -1343,10 +1434,26 @@ def normalize_extra_launch_args(value: object) -> str:
 
 def comfy_launch_spec(config: dict | None = None) -> dict:
     config = config or load_config()
-    mode = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+    backend = normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+    mode = normalize_launch_mode_for_backend(config.get("launch_mode", DEFAULT_LAUNCH_MODE), backend)
     spec = dict(COMFY_LAUNCH_MODES[mode])
     spec["key"] = mode
+    spec["backend"] = backend
     return spec
+
+
+def comfy_launch_environment(root: Path, config: dict | None = None) -> dict[str, str]:
+    config = config or load_config()
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    if normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)) == COMFY_BACKEND_AMD:
+        python_dir = root / "python_embeded"
+        scripts_dir = python_dir / "Scripts"
+        path_parts = [str(python_dir), str(scripts_dir), env.get("PATH", "")]
+        env["PATH"] = os.pathsep.join(part for part in path_parts if part)
+    return env
 
 
 def comfy_launch_command(root: Path, config: dict | None = None) -> list[str]:
@@ -1396,6 +1503,7 @@ def custom_comfy_archive_candidates() -> list[Path]:
     return [
         BASE_DIR / CUSTOM_COMFY_ARCHIVE_NAME,
         BASE_DIR / COMFYUI_PORTABLE_ARCHIVE_NAME,
+        BASE_DIR / comfy_backend_archive_name(COMFY_BACKEND_AMD),
     ]
 
 
@@ -1441,13 +1549,21 @@ def known_node_spec_map() -> dict[str, dict]:
     return mapping
 
 
-def resolve_comfy_package_source() -> dict:
+def resolve_comfy_package_source(config: dict | None = None) -> dict:
+    config = config or load_config()
+    backend = normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+    archive_backend = comfy_archive_backend(backend)
+    archive_name = comfy_backend_archive_name(backend)
+    portable_url = comfy_backend_portable_url(backend)
+
     for folder_path in custom_comfy_folder_candidates():
         if is_comfy_root(folder_path):
             return {
                 "kind": "local_folder",
                 "label": f"Твоя сборка из папки {folder_path.name}",
                 "source_root": Path(folder_path).resolve(),
+                "backend": backend,
+                "archive_backend": "custom",
             }
 
     for archive_path in custom_comfy_archive_candidates():
@@ -1456,6 +1572,8 @@ def resolve_comfy_package_source() -> dict:
                 "kind": "local_archive",
                 "label": f"Твоя сборка из файла {archive_path.name}",
                 "archive_path": archive_path,
+                "backend": backend,
+                "archive_backend": "custom",
             }
 
     url_file = custom_comfy_url_file()
@@ -1466,21 +1584,25 @@ def resolve_comfy_package_source() -> dict:
             custom_url = ""
         if custom_url:
             parsed = urlparse(custom_url)
-            filename = Path(parsed.path).name or COMFYUI_PORTABLE_ARCHIVE_NAME
+            filename = Path(parsed.path).name or archive_name
             if not filename.lower().endswith(".7z"):
-                filename = COMFYUI_PORTABLE_ARCHIVE_NAME
+                filename = archive_name
             return {
                 "kind": "remote_url",
                 "label": f"Твоя сборка по ссылке {custom_url}",
-            "url": custom_url,
-            "archive_name": filename,
+                "url": custom_url,
+                "archive_name": filename,
+                "backend": backend,
+                "archive_backend": "custom",
             }
 
     return {
         "kind": "official_latest",
-        "label": "Официальная portable-сборка ComfyUI",
-        "url": COMFYUI_PORTABLE_URL,
-        "archive_name": COMFYUI_PORTABLE_ARCHIVE_NAME,
+        "label": f"Официальная portable-сборка ComfyUI ({comfy_backend_title(backend)})",
+        "url": portable_url,
+        "archive_name": archive_name,
+        "backend": backend,
+        "archive_backend": archive_backend,
     }
 
 
@@ -1898,17 +2020,29 @@ def fetch_latest_release_info(force: bool = False) -> dict[str, object]:
 def fetch_latest_comfy_release_info(force: bool = False) -> dict[str, object]:
     cache = COMFY_RELEASE_CACHE
     now = time.monotonic()
+    config = load_config()
+    backend = normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+    archive_name = comfy_backend_archive_name(backend)
     cached = cache.get("info")
-    if cached and not force and (now - float(cache.get("at", 0.0) or 0.0)) < UPDATE_CHECK_CACHE_TTL:
+    if cached and not force and cached.get("backend") == backend and (now - float(cache.get("at", 0.0) or 0.0)) < UPDATE_CHECK_CACHE_TTL:
         return dict(cached)
     request = urllib.request.Request(COMFY_GITHUB_LATEST_RELEASE_API, headers=github_headers(), method="GET")
     with urllib.request.urlopen(request, timeout=DOWNLOAD_LINK_TIMEOUT) as response:
         data = json.loads(response.read().decode("utf-8", errors="replace"))
     tag_name = str(data.get("tag_name", "") or "").strip()
+    backend_urls = {
+        key: github_release_asset_url(data, comfy_backend_archive_name(key))
+        for key in (COMFY_BACKEND_NVIDIA, COMFY_BACKEND_AMD, COMFY_BACKEND_CPU)
+    }
+    portable_url = backend_urls.get(backend) or comfy_backend_portable_url(backend)
     info = {
         "tag_name": tag_name,
         "html_url": str(data.get("html_url", "") or COMFY_GITHUB_REPO_URL),
-        "portable_url": COMFYUI_PORTABLE_URL,
+        "portable_url": portable_url,
+        "backend": backend,
+        "archive_backend": comfy_archive_backend(backend),
+        "archive_name": archive_name,
+        "portable_urls": backend_urls,
         "available": bool(tag_name),
     }
     cache["info"] = dict(info)
@@ -1918,13 +2052,17 @@ def fetch_latest_comfy_release_info(force: bool = False) -> dict[str, object]:
 
 def safe_latest_comfy_release_info(force: bool = False, allow_network: bool = True) -> dict[str, object]:
     cached = COMFY_RELEASE_CACHE.get("info")
+    backend = normalize_comfy_backend(load_config().get("comfy_backend", DEFAULT_COMFY_BACKEND))
     if not allow_network:
-        if cached:
+        if cached and cached.get("backend") == backend:
             return dict(cached)
         return {
             "tag_name": "",
             "html_url": COMFY_GITHUB_REPO_URL,
-            "portable_url": COMFYUI_PORTABLE_URL,
+            "portable_url": comfy_backend_portable_url(backend),
+            "backend": backend,
+            "archive_backend": comfy_archive_backend(backend),
+            "archive_name": comfy_backend_archive_name(backend),
             "available": False,
             "error": "ComfyUI latest еще не проверен.",
         }
@@ -1934,7 +2072,10 @@ def safe_latest_comfy_release_info(force: bool = False, allow_network: bool = Tr
         return {
             "tag_name": "",
             "html_url": COMFY_GITHUB_REPO_URL,
-            "portable_url": COMFYUI_PORTABLE_URL,
+            "portable_url": comfy_backend_portable_url(backend),
+            "backend": backend,
+            "archive_backend": comfy_archive_backend(backend),
+            "archive_name": comfy_backend_archive_name(backend),
             "available": False,
             "error": str(exc),
         }
@@ -2068,8 +2209,13 @@ def write_comfy_source_marker(root: Path | None, source: dict | None = None) -> 
         "installed_at": time.time(),
         "portal_version": APP_VERSION,
         "source_kind": str(source.get("kind", "official_latest")),
-        "source_url": str(source.get("url", COMFYUI_PORTABLE_URL)),
+        "source_url": str(source.get("url", comfy_backend_portable_url(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)))),
+        "comfy_backend": normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)),
+        "comfy_backend_title": comfy_backend_title(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)),
+        "comfy_archive_backend": str(source.get("archive_backend", "")),
         "archive_name": str(source.get("archive_name", COMFYUI_PORTABLE_ARCHIVE_NAME)),
+        "backend": normalize_comfy_backend(source.get("backend", load_config().get("comfy_backend", DEFAULT_COMFY_BACKEND))),
+        "archive_backend": str(source.get("archive_backend", comfy_archive_backend(source.get("backend", DEFAULT_COMFY_BACKEND)))),
         "tag_name": str(latest.get("tag_name", "") or ""),
     }
     marker_path = comfy_source_marker_path(root)
@@ -2091,17 +2237,61 @@ def comfy_marker_stamp(root: Path | None) -> str:
         return "marker"
 
 
+def comfy_installed_archive_backend(root: Path | None) -> str:
+    marker = read_comfy_source_marker(root)
+    archive_backend = str(marker.get("archive_backend", "") or "").strip().lower()
+    if archive_backend:
+        return archive_backend
+    archive_name = str(marker.get("archive_name", "") or "").strip().lower()
+    if "amd" in archive_name:
+        return COMFY_BACKEND_AMD
+    if "nvidia" in archive_name or "cu" in archive_name:
+        return COMFY_BACKEND_NVIDIA
+    if root and (Path(root) / "run_amd_gpu.bat").exists():
+        return COMFY_BACKEND_AMD
+    return ""
+
+
+def comfy_backend_switch_needed(root: Path | None, source: dict | None = None) -> bool:
+    if not root:
+        return False
+    source = source or resolve_comfy_package_source()
+    if str(source.get("kind", "")) in {"local_folder", "local_archive", "remote_url"}:
+        return False
+    installed_archive_backend = comfy_installed_archive_backend(root)
+    selected_archive_backend = str(source.get("archive_backend", comfy_archive_backend(load_config().get("comfy_backend", DEFAULT_COMFY_BACKEND))) or "")
+    return bool(installed_archive_backend and selected_archive_backend and installed_archive_backend != selected_archive_backend)
+
+
 def comfy_update_status(root: Path | None, source: dict | None = None) -> dict[str, object]:
     if not root:
-        return {"available": False, "message": "", "installed_tag": "", "latest_tag": "", "latest_url": ""}
-    source = source or {}
+        return {"available": False, "message": "", "installed_tag": "", "latest_tag": "", "latest_url": "", "backend_mismatch": False}
+    source = source or resolve_comfy_package_source()
     if str(source.get("kind", "")) in {"local_folder", "local_archive", "remote_url"}:
-        return {"available": False, "message": "Используется кастомная сборка ComfyUI.", "installed_tag": "", "latest_tag": "", "latest_url": ""}
+        return {
+            "available": False,
+            "message": "Используется кастомная сборка ComfyUI.",
+            "installed_tag": "",
+            "latest_tag": "",
+            "latest_url": "",
+            "backend_mismatch": False,
+        }
     latest = safe_latest_comfy_release_info(allow_network=False)
     latest_tag = str(latest.get("tag_name", "") or "")
     marker = read_comfy_source_marker(root)
     installed_tag = str(marker.get("tag_name", "") or "") or read_comfy_version_from_files(root)
-    latest_url = str(latest.get("portable_url", COMFYUI_PORTABLE_URL) or COMFYUI_PORTABLE_URL)
+    selected_backend = normalize_comfy_backend(source.get("backend", load_config().get("comfy_backend", DEFAULT_COMFY_BACKEND)))
+    latest_url = str(latest.get("portable_url", comfy_backend_portable_url(selected_backend)) or comfy_backend_portable_url(selected_backend))
+    if comfy_backend_switch_needed(root, source):
+        installed_backend = comfy_installed_archive_backend(root) or "unknown"
+        return {
+            "available": True,
+            "message": f"Выбрана сборка {comfy_backend_title(selected_backend)}, а установлена {installed_backend}. Нужно обновить portable ComfyUI под выбранный backend.",
+            "installed_tag": installed_tag,
+            "latest_tag": latest_tag,
+            "latest_url": latest_url,
+            "backend_mismatch": True,
+        }
     if not latest.get("available"):
         return {
             "available": False,
@@ -2109,6 +2299,7 @@ def comfy_update_status(root: Path | None, source: dict | None = None) -> dict[s
             "installed_tag": installed_tag,
             "latest_tag": latest_tag,
             "latest_url": latest_url,
+            "backend_mismatch": False,
         }
     if installed_tag and latest_tag and is_version_newer(latest_tag, installed_tag):
         return {
@@ -2117,6 +2308,7 @@ def comfy_update_status(root: Path | None, source: dict | None = None) -> dict[s
             "installed_tag": installed_tag,
             "latest_tag": latest_tag,
             "latest_url": latest_url,
+            "backend_mismatch": False,
         }
     if not installed_tag:
         return {
@@ -2125,6 +2317,7 @@ def comfy_update_status(root: Path | None, source: dict | None = None) -> dict[s
             "installed_tag": "",
             "latest_tag": latest_tag,
             "latest_url": latest_url,
+            "backend_mismatch": False,
         }
     return {
         "available": False,
@@ -2132,6 +2325,7 @@ def comfy_update_status(root: Path | None, source: dict | None = None) -> dict[s
         "installed_tag": installed_tag,
         "latest_tag": latest_tag,
         "latest_url": latest_url,
+        "backend_mismatch": False,
     }
 
 
@@ -2666,10 +2860,12 @@ def setup_model_is_missing(item: dict) -> bool:
 def setup_status_cache_key(config: dict | None = None) -> str:
     config = config or load_config()
     root = normalize_root_path(config.get("comfy_root", ""))
-    source = resolve_comfy_package_source()
+    source = resolve_comfy_package_source(config)
     return "|".join(
         [
             root,
+            normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)),
+            normalize_launch_mode_for_backend(config.get("launch_mode", DEFAULT_LAUNCH_MODE), config.get("comfy_backend", DEFAULT_COMFY_BACKEND)),
             source.get("kind", ""),
             str(source.get("source_root", "")),
             str(source.get("archive_path", "")),
@@ -2688,7 +2884,7 @@ def comfy_setup_status(config: dict | None = None) -> dict:
     configured_root = normalize_root_path(config.get("comfy_root", ""))
     root_path = root or (Path(configured_root) if configured_root else None)
     root_text = str(root_path) if root_path else ""
-    source = resolve_comfy_package_source()
+    source = resolve_comfy_package_source(config)
     update_status = comfy_update_status(root, source)
     workflow_specs, unresolved_workflow_nodes, workflow_files = workflow_required_node_specs()
     manager_ready = manager_is_installed(root)
@@ -2732,9 +2928,13 @@ def comfy_setup_status(config: dict | None = None) -> dict:
         "root": root_text,
         "source_label": source["label"],
         "source_kind": source["kind"],
-        "source_url": str(source.get("url", COMFYUI_PORTABLE_URL)),
+        "source_url": str(source.get("url", comfy_backend_portable_url(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)))),
+        "comfy_backend": normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)),
+        "comfy_backend_title": comfy_backend_title(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)),
+        "comfy_archive_backend": comfy_archive_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)),
         "comfy_ready": bool(root),
         "comfy_update_available": bool(update_status.get("available", False)),
+        "comfy_backend_mismatch": bool(update_status.get("backend_mismatch", False)),
         "comfy_update_message": str(update_status.get("message", "") or ""),
         "comfy_installed_tag": str(update_status.get("installed_tag", "") or ""),
         "comfy_latest_tag": str(update_status.get("latest_tag", "") or ""),
@@ -3096,24 +3296,32 @@ def embedded_python_import_check(python_bin: Path, import_code: str) -> tuple[bo
 
 def comfy_torch_preflight_message_is_blocking(message: object) -> bool:
     text = str(message or "").strip()
-    return ("PyTorch" in text and "python_embeded" in text) or ("CUDA" in text and ("GPU" in text or "PyTorch" in text))
+    return (
+        ("PyTorch" in text and "python_embeded" in text)
+        or ("CUDA" in text and ("GPU" in text or "PyTorch" in text))
+        or ("ROCm" in text and ("AMD" in text or "PyTorch" in text))
+    )
 
 
 def check_comfy_torch_preflight(root: Path, config: dict) -> None:
     python_bin = root / "python_embeded" / "python.exe"
     if not python_bin.exists():
         return
-    launch_mode = normalize_launch_mode(config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+    backend = normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+    launch_mode = normalize_launch_mode_for_backend(config.get("launch_mode", DEFAULT_LAUNCH_MODE), backend)
     code = (
         "import json\n"
         "try:\n"
         "    import torch\n"
         "    cuda_available = bool(torch.cuda.is_available())\n"
         "    cuda_version = getattr(torch.version, 'cuda', None)\n"
+        "    hip_version = getattr(torch.version, 'hip', None)\n"
         "    gpu_name = ''\n"
+        "    device_count = 0\n"
         "    if cuda_available:\n"
         "        try:\n"
-        "            gpu_name = torch.cuda.get_device_name(0)\n"
+        "            device_count = int(torch.cuda.device_count())\n"
+        "            gpu_name = torch.cuda.get_device_name(0) if device_count else ''\n"
         "        except Exception:\n"
         "            gpu_name = ''\n"
         "    print(json.dumps({\n"
@@ -3121,6 +3329,8 @@ def check_comfy_torch_preflight(root: Path, config: dict) -> None:
         "        'torch': str(getattr(torch, '__version__', '')),\n"
         "        'cuda_available': cuda_available,\n"
         "        'cuda': str(cuda_version or ''),\n"
+        "        'hip': str(hip_version or ''),\n"
+        "        'device_count': device_count,\n"
         "        'gpu': str(gpu_name or ''),\n"
         "    }))\n"
         "except Exception as exc:\n"
@@ -3129,8 +3339,8 @@ def check_comfy_torch_preflight(root: Path, config: dict) -> None:
     try:
         result = run_hidden_process_utf8([str(python_bin), "-s", "-c", code], python_bin.parent, timeout=45)
     except subprocess.TimeoutExpired as exc:
-        write_portal_log("comfy.torch.check.timeout", str(exc), root=root, mode=launch_mode)
-        raise RuntimeError("PyTorch не установлен или не отвечает в python_embeded. Установите PyTorch вручную в portable ComfyUI.") from exc
+        write_portal_log("comfy.torch.check.timeout", str(exc), root=root, backend=backend, mode=launch_mode)
+        raise RuntimeError("PyTorch не установлен или не отвечает в python_embeded. Установите корректную portable-сборку ComfyUI.") from exc
     output = (decode_process_output(result.stdout) or "").strip()
     error_output = (decode_process_output(result.stderr) or "").strip()
     info: dict = {}
@@ -3141,25 +3351,45 @@ def check_comfy_torch_preflight(root: Path, config: dict) -> None:
             info = {}
     if result.returncode != 0 or not info.get("ok"):
         error_text = str(info.get("error") or error_output or output or "torch import failed")
-        write_portal_log("comfy.torch.missing", error_text, root=root, mode=launch_mode, returncode=result.returncode)
+        write_portal_log("comfy.torch.missing", error_text, root=root, backend=backend, mode=launch_mode, returncode=result.returncode)
         update_state(lambda state: state.update({"desired_running": False, "last_tunnel_error": "PyTorch is missing."}) or None)
-        raise RuntimeError(
-            "PyTorch не установлен в python_embeded. Установите PyTorch вручную в portable ComfyUI, потом запустите портал снова."
-        )
+        raise RuntimeError("PyTorch не установлен в python_embeded. Переустановите portable ComfyUI под выбранный backend.")
+    cuda_available = bool(info.get("cuda_available", False))
+    hip_version = str(info.get("hip", "") or "")
+    cuda_version = str(info.get("cuda", "") or "")
     write_portal_log(
         "comfy.torch.check",
         root=root,
+        backend=backend,
         mode=launch_mode,
         torch=str(info.get("torch", "")),
-        cuda_available=bool(info.get("cuda_available", False)),
-        cuda=str(info.get("cuda", "")),
+        cuda_available=cuda_available,
+        cuda=cuda_version,
+        hip=hip_version,
+        device_count=int(info.get("device_count", 0) or 0),
         gpu=str(info.get("gpu", "")),
     )
-    if launch_mode != "cpu" and not bool(info.get("cuda_available", False)):
+    if backend == COMFY_BACKEND_CPU or launch_mode == "cpu":
+        return
+    if backend == COMFY_BACKEND_AMD:
+        if not hip_version:
+            update_state(lambda state: state.update({"desired_running": False, "last_tunnel_error": "AMD ROCm PyTorch is unavailable."}) or None)
+            write_portal_log("comfy.rocm.unavailable", root=root, mode=launch_mode, torch=str(info.get("torch", "")), cuda=cuda_version, hip=hip_version)
+            raise RuntimeError(
+                "AMD ROCm PyTorch недоступен в python_embeded. Выберите AMD portable-сборку ComfyUI и установите совместимый AMD PyTorch/ROCm driver для Windows 11."
+            )
+        if not cuda_available:
+            update_state(lambda state: state.update({"desired_running": False, "last_tunnel_error": "AMD GPU is unavailable to PyTorch."}) or None)
+            write_portal_log("comfy.rocm.device_unavailable", root=root, mode=launch_mode, torch=str(info.get("torch", "")), hip=hip_version)
+            raise RuntimeError(
+                "AMD ROCm найден, но PyTorch не видит GPU. Проверьте совместимость карты, драйвер AMD PyTorch/ROCm и отключите fallback на iGPU, если он есть."
+            )
+        return
+    if not cuda_available or hip_version:
         update_state(lambda state: state.update({"desired_running": False, "last_tunnel_error": "CUDA is unavailable."}) or None)
-        write_portal_log("comfy.cuda.unavailable", root=root, mode=launch_mode, torch=str(info.get("torch", "")), cuda=str(info.get("cuda", "")))
+        write_portal_log("comfy.cuda.unavailable", root=root, mode=launch_mode, torch=str(info.get("torch", "")), cuda=cuda_version, hip=hip_version)
         raise RuntimeError(
-            "CUDA недоступна для выбранного GPU-режима. Установите NVIDIA Driver и PyTorch CUDA вручную или выберите CPU режим в настройках портала."
+            "CUDA недоступна для NVIDIA-режима. Установите NVIDIA Driver и NVIDIA portable-сборку ComfyUI или выберите AMD/CPU backend в настройках портала."
         )
 
 
@@ -3933,17 +4163,20 @@ def run_comfy_stable_update_script(root: Path, progress=None) -> None:
 def install_comfyui_portable(install_parent: Path, progress=None, force_update: bool = False) -> Path:
     install_parent = install_parent.expanduser().resolve()
     install_parent.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+    source = resolve_comfy_package_source(config)
     existing_root = discover_comfy_root_in(install_parent)
-    if existing_root and not force_update:
+    if existing_root and not force_update and not comfy_backend_switch_needed(existing_root, source):
         write_portal_log("comfy.install.skip_existing", root=existing_root, install_parent=install_parent)
         if progress:
             progress(1.0, "Portable ComfyUI уже найден", build_setup_progress_meta("comfy", "done", 100, "Portable уже установлен"))
-        config = load_config()
         config["comfy_root"] = str(existing_root)
         save_config(config)
         return existing_root
 
-    source = resolve_comfy_package_source()
+    if existing_root and comfy_backend_switch_needed(existing_root, source):
+        force_update = True
+
     write_portal_log("comfy.install.start", force_update=force_update, install_parent=install_parent, existing_root=existing_root, source_kind=source.get("kind"), source_url=source.get("url"), archive_name=source.get("archive_name"), archive_path=source.get("archive_path"))
     if existing_root and force_update:
         if progress:
@@ -3952,7 +4185,8 @@ def install_comfyui_portable(install_parent: Path, progress=None, force_update: 
             stop_all()
         except Exception:
             pass
-        stable_update_script = comfy_stable_update_script(existing_root) if PREFER_COMFY_STABLE_UPDATER else None
+        backend_switch = comfy_backend_switch_needed(existing_root, source)
+        stable_update_script = comfy_stable_update_script(existing_root) if (PREFER_COMFY_STABLE_UPDATER and not backend_switch) else None
         stable_update_error = ""
         if stable_update_script:
             try:
@@ -6239,9 +6473,7 @@ def start_comfy_if_needed() -> str:
         clear_logs(COMFY_OUT, COMFY_ERR)
         out = open(COMFY_OUT, "w", encoding="utf-8")
         err = open(COMFY_ERR, "w", encoding="utf-8")
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        env["PYTHONIOENCODING"] = "utf-8"
+        env = comfy_launch_environment(comfy_root, config)
         command = comfy_launch_command(comfy_root, config)
         out.write(
             "[portal]\n"
@@ -7562,6 +7794,7 @@ class ComfyGuideDialog(QDialog):
         status_layout.addWidget(folder_value)
         status_layout.addSpacing(8)
         status_layout.addWidget(self.build_status_row("source", "Источник сборки", self.status.get("source_kind") != "official_latest", self.status.get("source_label", "")))
+        status_layout.addWidget(self.build_status_row("backend", "Comfy backend", True, self.status.get("comfy_backend_title", comfy_backend_title(DEFAULT_COMFY_BACKEND))))
         status_layout.addWidget(self.build_status_row("comfy", "Portable ComfyUI", bool(self.status.get("comfy_ready")), "Portable найден" if self.status.get("comfy_ready") else "Нужно скачать portable", installable=True))
         status_layout.addWidget(self.build_status_row("manager", "ComfyUI Manager", bool(self.status.get("manager_ready")), "Manager уже есть" if self.status.get("manager_ready") else "Будет поставлен в custom_nodes", installable=True))
         for model in self.status.get("models", []):
@@ -7852,6 +8085,7 @@ class ComfyGuideDialog(QDialog):
         manager_ready = bool(self.status.get("manager_ready"))
         updates: list[tuple[str, bool, str]] = [
             ("source", self.status.get("source_kind") != "official_latest", self.status.get("source_label", "")),
+            ("backend", True, self.status.get("comfy_backend_title", comfy_backend_title(DEFAULT_COMFY_BACKEND))),
             ("comfy", comfy_ready, "Portable найден" if comfy_ready else "Нужно скачать portable"),
             ("manager", manager_ready, "Manager уже есть" if manager_ready else ("Сначала нужно установить Portable ComfyUI" if not comfy_ready else "Будет поставлен в custom_nodes")),
         ]
@@ -8790,7 +9024,7 @@ class ComfySetupPage(QWidget):
 
         self.status_rows["comfy"] = SetupStatusRow("Portable ComfyUI", theme)
         self.status_rows["manager"] = SetupStatusRow("ComfyUI Manager", theme)
-        self.status_rows["comfy"].set_link(str(status.get("source_url", "") or COMFYUI_PORTABLE_URL))
+        self.status_rows["comfy"].set_link(str(status.get("source_url", "") or comfy_backend_portable_url(status.get("comfy_backend", DEFAULT_COMFY_BACKEND))))
         self.status_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
         self.status_rows["manager"].set_install_action("manager")
         self.status_rows["manager"].install_requested.connect(self.install_requested.emit)
@@ -8945,7 +9179,7 @@ class ComfySetupPage(QWidget):
             self.syncing_model_choices = False
 
     def open_manual_comfy_download(self) -> None:
-        url = str(self.status.get("source_url", "") or COMFYUI_PORTABLE_URL)
+        url = str(self.status.get("source_url", "") or comfy_backend_portable_url(self.status.get("comfy_backend", DEFAULT_COMFY_BACKEND)))
         QDesktopServices.openUrl(QUrl(url))
 
     def clear_row_progress(self, keep_key: str = "") -> None:
@@ -8967,7 +9201,7 @@ class ComfySetupPage(QWidget):
             self.folder_label.setText(f"Папка установки: {self.install_target_path}")
         else:
             self.folder_label.setText("Папка пока не выбрана")
-        self.status_rows["comfy"].set_link(str(status.get("source_url", "") or COMFYUI_PORTABLE_URL))
+        self.status_rows["comfy"].set_link(str(status.get("source_url", "") or comfy_backend_portable_url(status.get("comfy_backend", DEFAULT_COMFY_BACKEND))))
         self.status_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
         self.status_rows["manager"].set_install_enabled(comfy_ready and not bool(self.active_scope))
         maintenance_enabled = comfy_ready and not bool(self.active_scope)
@@ -9693,7 +9927,7 @@ class MainWindow(QWidget):
         self.onboarding_install_section.cancel_requested.connect(self.cancel_setup_install)
         self.onboarding_install_section.set_collapsed(True)
         self.onboarding_install_rows["comfy"] = SetupStatusRow("Portable ComfyUI", self.theme)
-        self.onboarding_install_rows["comfy"].set_link(str(onboarding_status.get("source_url", "") or COMFYUI_PORTABLE_URL))
+        self.onboarding_install_rows["comfy"].set_link(str(onboarding_status.get("source_url", "") or comfy_backend_portable_url(onboarding_status.get("comfy_backend", DEFAULT_COMFY_BACKEND))))
         self.onboarding_install_section.add_row(self.onboarding_install_rows["comfy"])
         self.refresh_onboarding_install_rows(onboarding_status)
 
@@ -9734,21 +9968,28 @@ class MainWindow(QWidget):
         self.onboarding_mode_hint = QLabel("GPU режим рекомендуем для большинства ПК. CPU режим стоит брать только если видеокарты нет или она не подходит.")
         self.onboarding_mode_hint.setObjectName("launchChoiceSubtitle")
         self.onboarding_mode_hint.setWordWrap(True)
-        self.onboarding_gpu_button = QPushButton("GPU")
-        self.onboarding_gpu_button.setObjectName("launchChoiceModeGreenButton")
-        self.onboarding_gpu_button.setMinimumHeight(58)
-        self.onboarding_gpu_button.setCursor(Qt.PointingHandCursor)
-        self.onboarding_gpu_button.clicked.connect(lambda: self.set_onboarding_mode("fp16"))
+        self.onboarding_nvidia_button = QPushButton("NVIDIA")
+        self.onboarding_nvidia_button.setObjectName("launchChoiceModeGreenButton")
+        self.onboarding_nvidia_button.setMinimumHeight(58)
+        self.onboarding_nvidia_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_nvidia_button.clicked.connect(lambda: self.set_onboarding_backend(COMFY_BACKEND_NVIDIA))
+        self.onboarding_amd_button = QPushButton("AMD")
+        self.onboarding_amd_button.setObjectName("launchChoiceModeGreenButton")
+        self.onboarding_amd_button.setMinimumHeight(58)
+        self.onboarding_amd_button.setCursor(Qt.PointingHandCursor)
+        self.onboarding_amd_button.clicked.connect(lambda: self.set_onboarding_backend(COMFY_BACKEND_AMD))
         self.onboarding_cpu_button = QPushButton("CPU")
         self.onboarding_cpu_button.setObjectName("launchChoiceModeRedButton")
         self.onboarding_cpu_button.setMinimumHeight(58)
         self.onboarding_cpu_button.setCursor(Qt.PointingHandCursor)
-        self.onboarding_cpu_button.clicked.connect(lambda: self.set_onboarding_mode("cpu"))
-        self.onboarding_mode_recommend = QLabel("Рекомендуется: GPU")
+        self.onboarding_cpu_button.clicked.connect(lambda: self.set_onboarding_backend(COMFY_BACKEND_CPU))
+        self.onboarding_gpu_button = self.onboarding_nvidia_button
+        self.onboarding_mode_recommend = QLabel("Recommended: NVIDIA for CUDA, AMD for supported ROCm GPUs, CPU only as fallback.")
         self.onboarding_mode_recommend.setObjectName("launchChoiceStepHint")
         mode_buttons_layout = QHBoxLayout()
         mode_buttons_layout.setSpacing(12)
-        mode_buttons_layout.addWidget(self.onboarding_gpu_button, 1)
+        mode_buttons_layout.addWidget(self.onboarding_nvidia_button, 1)
+        mode_buttons_layout.addWidget(self.onboarding_amd_button, 1)
         mode_buttons_layout.addWidget(self.onboarding_cpu_button, 1)
         self.onboarding_mode_continue = QPushButton("Продолжить")
         self.onboarding_mode_continue.setObjectName("launchChoiceContinueButton")
@@ -9963,6 +10204,35 @@ class MainWindow(QWidget):
         self.port_input.setMinimumHeight(44)
         self.port_input.setMaximumWidth(DRAWER_CONTROL_WIDTH)
 
+        self.comfy_backend_label = QLabel("Comfy backend")
+        self.comfy_backend_label.setObjectName("drawerLabel")
+        self.comfy_backend_segment = QFrame()
+        self.comfy_backend_segment.setObjectName("themeSegment")
+        self.comfy_backend_segment.setFixedHeight(56)
+        self.comfy_backend_segment.setMaximumWidth(DRAWER_CONTROL_WIDTH)
+        self.comfy_backend_segment.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        comfy_backend_layout = QHBoxLayout(self.comfy_backend_segment)
+        comfy_backend_layout.setContentsMargins(4, 4, 4, 4)
+        comfy_backend_layout.setSpacing(6)
+        self.comfy_backend_buttons: dict[str, QPushButton] = {}
+        self.comfy_backend_group = QButtonGroup(self)
+        self.comfy_backend_group.setExclusive(True)
+        for backend_key in (COMFY_BACKEND_NVIDIA, COMFY_BACKEND_AMD, COMFY_BACKEND_CPU):
+            button = QPushButton(comfy_backend_title(backend_key))
+            button.setCheckable(True)
+            button.setObjectName("segmentButton")
+            button.setCursor(Qt.PointingHandCursor)
+            button.setFixedHeight(38)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            button.clicked.connect(partial(self.set_comfy_backend, backend_key))
+            self.comfy_backend_group.addButton(button)
+            self.comfy_backend_buttons[backend_key] = button
+            comfy_backend_layout.addWidget(button)
+        self.comfy_backend_hint = QLabel("")
+        self.comfy_backend_hint.setObjectName("drawerHint")
+        self.comfy_backend_hint.setWordWrap(True)
+
         self.launch_mode_label = QLabel("Comfy launch mode")
         self.launch_mode_label.setObjectName("drawerLabel")
         self.launch_mode_segment = QFrame()
@@ -9977,7 +10247,7 @@ class MainWindow(QWidget):
         self.launch_mode_buttons: dict[str, QPushButton] = {}
         self.launch_mode_group = QButtonGroup(self)
         self.launch_mode_group.setExclusive(True)
-        for mode_key in ("fp16", "fp8", "bf16", "cpu"):
+        for mode_key in ("fp16", "fp8", "bf16", "lowvram", "cpu"):
             button = QPushButton(COMFY_LAUNCH_MODES[mode_key]["title"])
             button.setCheckable(True)
             button.setObjectName("segmentButton")
@@ -10071,6 +10341,9 @@ class MainWindow(QWidget):
         drawer_layout.addWidget(self.subdomain_hint)
         drawer_layout.addWidget(self.port_label)
         drawer_layout.addWidget(self.port_input)
+        drawer_layout.addWidget(self.comfy_backend_label)
+        drawer_layout.addWidget(self.comfy_backend_segment)
+        drawer_layout.addWidget(self.comfy_backend_hint)
         drawer_layout.addWidget(self.launch_mode_label)
         drawer_layout.addWidget(self.launch_mode_segment)
         drawer_layout.addWidget(self.extra_launch_args_label)
@@ -10773,8 +11046,17 @@ class MainWindow(QWidget):
             normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER)),
             [(button, provider) for provider, button in self.tunnel_provider_buttons.items()],
         )
+        backend = normalize_comfy_backend(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
         apply_segment_group(
-            normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE)),
+            backend,
+            [(button, backend_key) for backend_key, button in self.comfy_backend_buttons.items()],
+        )
+        self.comfy_backend_hint.setText(comfy_backend_description(backend))
+        allowed_modes = set(launch_modes_for_backend(backend))
+        for mode_key, button in self.launch_mode_buttons.items():
+            button.setVisible(mode_key in allowed_modes)
+        apply_segment_group(
+            normalize_launch_mode_for_backend(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE), backend),
             [(button, mode) for mode, button in self.launch_mode_buttons.items()],
         )
 
@@ -10968,8 +11250,16 @@ class MainWindow(QWidget):
                     self.port_input.setText(str(self.config["port"]))
                 self.port_input.setCursorPosition(0)
 
-                active_launch_mode = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+                active_backend = normalize_comfy_backend(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+                for backend_key, button in self.comfy_backend_buttons.items():
+                    should_check = backend_key == active_backend
+                    if button.isChecked() != should_check:
+                        button.setChecked(should_check)
+                self.comfy_backend_hint.setText(comfy_backend_description(active_backend))
+
+                active_launch_mode = normalize_launch_mode_for_backend(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE), active_backend)
                 for mode_key, button in self.launch_mode_buttons.items():
+                    button.setVisible(mode_key in launch_modes_for_backend(active_backend))
                     should_check = mode_key == active_launch_mode
                     if button.isChecked() != should_check:
                         button.setChecked(should_check)
@@ -11458,7 +11748,7 @@ class MainWindow(QWidget):
 
     def open_github_releases(self) -> None:
         if self.update_banner_kind == "comfy":
-            target = str((self.release_info or {}).get("portable_url", "") or COMFYUI_PORTABLE_URL)
+            target = str((self.release_info or {}).get("portable_url", "") or comfy_backend_portable_url(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND)))
         else:
             target = str((self.release_info or {}).get("html_url", "") or GITHUB_RELEASES_URL)
         QDesktopServices.openUrl(QUrl(target))
@@ -11466,7 +11756,7 @@ class MainWindow(QWidget):
     def refresh_onboarding_install_rows(self, status: dict) -> None:
         comfy_ready = bool(status.get("comfy_ready"))
         if "comfy" in self.onboarding_install_rows:
-            self.onboarding_install_rows["comfy"].set_link(str(status.get("source_url", "") or COMFYUI_PORTABLE_URL))
+            self.onboarding_install_rows["comfy"].set_link(str(status.get("source_url", "") or comfy_backend_portable_url(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))))
         if "comfy" in self.onboarding_install_rows:
             if comfy_ready and status.get("comfy_update_available"):
                 self.onboarding_install_rows["comfy"].set_state(False, str(status.get("comfy_update_message", "") or "Есть необязательное обновление ComfyUI."), "update")
@@ -11481,13 +11771,13 @@ class MainWindow(QWidget):
             self.onboarding_install_section.clear_progress()
 
     def update_onboarding_mode_buttons(self) -> None:
-        selected_mode = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
-        gpu_selected = selected_mode != "cpu"
+        selected_backend = normalize_comfy_backend(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
         selected_style = f"background: {self.theme.blue}; color: white; border: none; border-radius: 22px; font-size: 16px; font-weight: 800;"
         unselected_style = f"background: {self.theme.soft_btn}; color: {self.theme.text}; border: 1px solid {self.theme.border}; border-radius: 22px; font-size: 16px; font-weight: 800;"
-        self.onboarding_gpu_button.setStyleSheet(selected_style if gpu_selected else unselected_style)
-        self.onboarding_cpu_button.setStyleSheet(selected_style if not gpu_selected else unselected_style)
-        self.onboarding_mode_recommend.setText("Рекомендуется: GPU" if gpu_selected else "Выбран CPU режим")
+        self.onboarding_nvidia_button.setStyleSheet(selected_style if selected_backend == COMFY_BACKEND_NVIDIA else unselected_style)
+        self.onboarding_amd_button.setStyleSheet(selected_style if selected_backend == COMFY_BACKEND_AMD else unselected_style)
+        self.onboarding_cpu_button.setStyleSheet(selected_style if selected_backend == COMFY_BACKEND_CPU else unselected_style)
+        self.onboarding_mode_recommend.setText(comfy_backend_description(selected_backend))
 
     def update_onboarding_tunnel_buttons(self) -> None:
         selected_provider = normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
@@ -11619,12 +11909,21 @@ class MainWindow(QWidget):
     def skip_onboarding_install_step(self) -> None:
         self.set_onboarding_step("mode")
 
+    def set_onboarding_backend(self, backend: str) -> None:
+        backend = normalize_comfy_backend(backend)
+        self.config["comfy_backend"] = backend
+        self.config["launch_mode"] = "cpu" if backend == COMFY_BACKEND_CPU else "fp16"
+        self.update_onboarding_mode_buttons()
+
     def set_onboarding_mode(self, mode: str) -> None:
-        self.config["launch_mode"] = normalize_launch_mode(mode)
+        backend = COMFY_BACKEND_CPU if normalize_launch_mode(mode) == "cpu" else normalize_comfy_backend(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+        self.config["comfy_backend"] = backend
+        self.config["launch_mode"] = normalize_launch_mode_for_backend(mode, backend)
         self.update_onboarding_mode_buttons()
 
     def advance_onboarding_from_mode(self) -> None:
-        self.config["launch_mode"] = normalize_launch_mode(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+        self.config["comfy_backend"] = normalize_comfy_backend(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+        self.config["launch_mode"] = normalize_launch_mode_for_backend(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE), self.config["comfy_backend"])
         self.config["launch_mode_confirmed"] = True
         self.config["tunnel_provider"] = TUNNEL_PROVIDER_LOCALTUNNEL
         save_config(self.config)
@@ -11683,7 +11982,7 @@ class MainWindow(QWidget):
                             "kind": "comfy",
                             "tag_name": setup_status.get("comfy_latest_tag", ""),
                             "html_url": COMFY_GITHUB_REPO_URL,
-                            "portable_url": setup_status.get("comfy_latest_url", COMFYUI_PORTABLE_URL),
+                            "portable_url": setup_status.get("comfy_latest_url", comfy_backend_portable_url(setup_status.get("comfy_backend", DEFAULT_COMFY_BACKEND))),
                             "available": True,
                             "newer": True,
                             "message": setup_status.get("comfy_update_message", ""),
@@ -11879,8 +12178,12 @@ class MainWindow(QWidget):
         updated_config["tunnel_provider"] = normalize_tunnel_provider(
             next((provider for provider, button in self.tunnel_provider_buttons.items() if button.isChecked()), self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
         )
-        updated_config["launch_mode"] = normalize_launch_mode(
-            next((mode for mode, button in self.launch_mode_buttons.items() if button.isChecked()), self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+        updated_config["comfy_backend"] = normalize_comfy_backend(
+            next((backend for backend, button in self.comfy_backend_buttons.items() if button.isChecked()), self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+        )
+        updated_config["launch_mode"] = normalize_launch_mode_for_backend(
+            next((mode for mode, button in self.launch_mode_buttons.items() if button.isChecked()), self.config.get("launch_mode", DEFAULT_LAUNCH_MODE)),
+            updated_config["comfy_backend"],
         )
         updated_config["extra_launch_args"] = normalize_extra_launch_args(self.extra_launch_args_input.text())
         updated_config["launch_mode_confirmed"] = True
@@ -12037,8 +12340,26 @@ class MainWindow(QWidget):
         self.set_onboarding_mode(mode)
         self.advance_onboarding_from_mode()
 
+    def set_comfy_backend(self, backend: str) -> None:
+        backend = normalize_comfy_backend(backend)
+        button = self.comfy_backend_buttons.get(backend)
+        if button and not button.isChecked():
+            button.setChecked(True)
+        if self.syncing_controls:
+            return
+        if normalize_comfy_backend(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND)) == backend:
+            return
+        self.config["comfy_backend"] = backend
+        current_mode = normalize_launch_mode_for_backend(self.config.get("launch_mode", DEFAULT_LAUNCH_MODE), backend)
+        self.config["launch_mode"] = current_mode
+        self.config["launch_mode_confirmed"] = True
+        self.update_segment_buttons()
+        self.mark_settings_dirty()
+
     def set_launch_mode(self, mode: str) -> None:
         mode = normalize_launch_mode(mode)
+        backend = normalize_comfy_backend(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+        mode = normalize_launch_mode_for_backend(mode, backend)
         button = self.launch_mode_buttons.get(mode)
         if button and not button.isChecked():
             button.setChecked(True)
@@ -12324,12 +12645,20 @@ class MainWindow(QWidget):
         box = QMessageBox(self)
         box.setWindowTitle("ComfyUI не запущен")
         box.setIcon(QMessageBox.Warning)
-        if "CUDA" in str(message or ""):
+        message_text = str(message or "")
+        if "ROCm" in message_text or "AMD" in message_text:
+            box.setText("AMD ROCm недоступен.")
+            box.setInformativeText(
+                "Портал не будет сам ставить AMD ROCm/PyTorch.\n\n"
+                "Выберите AMD backend в настройках портала, установите официальную AMD portable-сборку ComfyUI и совместимый AMD PyTorch/ROCm driver для Windows 11. "
+                "Если GPU не поддерживается, используйте CPU backend."
+            )
+        elif "CUDA" in message_text:
             box.setText("CUDA недоступна.")
             box.setInformativeText(
                 "Портал не будет сам ставить CUDA или PyTorch.\n\n"
-                "Установите NVIDIA Driver и PyTorch CUDA вручную в python_embeded portable ComfyUI, "
-                "или выберите CPU режим в настройках портала."
+                "Установите NVIDIA Driver и NVIDIA portable-сборку ComfyUI, "
+                "или выберите AMD/CPU backend в настройках портала."
             )
         else:
             box.setText("PyTorch не установлен.")
@@ -12443,6 +12772,7 @@ class MainWindow(QWidget):
     def save_settings(self, silent: bool = False) -> bool:
         previous_config = load_config()
         previous_provider = normalize_tunnel_provider(previous_config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
+        previous_backend = normalize_comfy_backend(previous_config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
         updated_config = dict(previous_config)
         comfy_root_input = normalize_root_path(self.comfy_root_input.text())
         comfy_root = str(coerce_comfy_root(comfy_root_input) or "")
@@ -12455,8 +12785,12 @@ class MainWindow(QWidget):
         updated_config["tunnel_provider"] = normalize_tunnel_provider(
             next((provider for provider, button in self.tunnel_provider_buttons.items() if button.isChecked()), self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
         )
-        updated_config["launch_mode"] = normalize_launch_mode(
-            next((mode for mode, button in self.launch_mode_buttons.items() if button.isChecked()), self.config.get("launch_mode", DEFAULT_LAUNCH_MODE))
+        updated_config["comfy_backend"] = normalize_comfy_backend(
+            next((backend for backend, button in self.comfy_backend_buttons.items() if button.isChecked()), self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+        )
+        updated_config["launch_mode"] = normalize_launch_mode_for_backend(
+            next((mode for mode, button in self.launch_mode_buttons.items() if button.isChecked()), self.config.get("launch_mode", DEFAULT_LAUNCH_MODE)),
+            updated_config["comfy_backend"],
         )
         updated_config["extra_launch_args"] = normalize_extra_launch_args(self.extra_launch_args_input.text())
         updated_config["launch_mode_confirmed"] = True
@@ -12466,7 +12800,11 @@ class MainWindow(QWidget):
         self.config = updated_config
         save_config(self.config)
         provider_changed = previous_provider != normalize_tunnel_provider(self.config.get("tunnel_provider", DEFAULT_TUNNEL_PROVIDER))
-        if provider_changed:
+        backend_changed = previous_backend != normalize_comfy_backend(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+        if backend_changed:
+            write_portal_log("settings.backend.changed", previous=previous_backend, current=self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+            stop_all()
+        elif provider_changed:
             stop_main_tunnel_only()
         if comfy_root and self.comfy_root_input.text() != comfy_root:
             self.comfy_root_input.setText(comfy_root)
