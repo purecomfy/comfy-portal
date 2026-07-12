@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.5"
 APP_USER_MODEL_ID = "PureComfy.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -107,10 +107,10 @@ DISCOVER_COMFY_CACHE_TTL = 90.0
 DISCOVER_COMFY_BUDGET_SECONDS = 2.8
 DISCOVER_COMFY_DEEP_BUDGET_SECONDS = 4.5
 LOG_VIEW_POLL_MS = 550
-PUBLIC_TUNNEL_CACHE_TTL = 18.0
-PUBLIC_TUNNEL_HTTP_TIMEOUT = 60.0
+PUBLIC_TUNNEL_CACHE_TTL = 10.0
+PUBLIC_TUNNEL_HTTP_TIMEOUT = 8.0
 PUBLIC_TUNNEL_PROMPT_TIMEOUT = 120.0
-TUNNEL_READY_GRACE_SECONDS = 140.0
+TUNNEL_READY_GRACE_SECONDS = 45.0
 MAIN_TUNNEL_LAUNCH_ATTEMPTS = 4
 FRIEND_TUNNEL_READY_SECONDS = 2.5
 UPDATE_CHECK_CACHE_TTL = 900.0
@@ -2203,6 +2203,7 @@ def write_comfy_source_marker(root: Path | None, source: dict | None = None) -> 
     if not root:
         return
     source = source or {}
+    config = load_config()
     latest = safe_latest_comfy_release_info(force=True)
     marker = {
         "installed_by": APP_NAME,
@@ -2214,7 +2215,7 @@ def write_comfy_source_marker(root: Path | None, source: dict | None = None) -> 
         "comfy_backend_title": comfy_backend_title(config.get("comfy_backend", DEFAULT_COMFY_BACKEND)),
         "comfy_archive_backend": str(source.get("archive_backend", "")),
         "archive_name": str(source.get("archive_name", COMFYUI_PORTABLE_ARCHIVE_NAME)),
-        "backend": normalize_comfy_backend(source.get("backend", load_config().get("comfy_backend", DEFAULT_COMFY_BACKEND))),
+        "backend": normalize_comfy_backend(source.get("backend", config.get("comfy_backend", DEFAULT_COMFY_BACKEND))),
         "archive_backend": str(source.get("archive_backend", comfy_archive_backend(source.get("backend", DEFAULT_COMFY_BACKEND)))),
         "tag_name": str(latest.get("tag_name", "") or ""),
     }
@@ -4088,6 +4089,7 @@ def extract_7z_archive(archive_path: Path, destination_dir: Path) -> None:
 
 
 PRESERVED_COMFY_UPDATE_DIRS = {
+    ("ComfyUI", ".git"),
     ("ComfyUI", "models"),
     ("ComfyUI", "custom_nodes"),
     ("ComfyUI", "input"),
@@ -5887,17 +5889,21 @@ def public_comfy_http_ready(url: str, timeout_seconds: float = 1.2) -> bool:
     headers = {"User-Agent": DOWNLOAD_USER_AGENT, "bypass-tunnel-reminder": "true"}
     if is_localtunnel_url(clean_url):
         timeout_seconds = max(timeout_seconds, PUBLIC_TUNNEL_HTTP_TIMEOUT)
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
     probes = (
-        (f"{clean_url}/api/system_stats", ("devices", "system", "vram_total")),
-        (f"{clean_url}/api/queue", ("queue_running", "queue_pending", "running", "pending")),
         (f"{clean_url}/system_stats", ("devices", "system", "vram_total")),
         (f"{clean_url}/queue", ("queue_running", "queue_pending", "running", "pending")),
+        (f"{clean_url}/api/system_stats", ("devices", "system", "vram_total")),
+        (f"{clean_url}/api/queue", ("queue_running", "queue_pending", "running", "pending")),
         (clean_url, ("comfyui", "comfyui_frontend_package")),
     )
     for probe_url, markers in probes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             request = urllib.request.Request(probe_url, headers=headers)
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            with urllib.request.urlopen(request, timeout=max(0.8, min(remaining, 3.0))) as response:
                 status = int(getattr(response, "status", response.getcode()) or 200)
                 body = response.read(768).decode("utf-8", errors="ignore").lower()
                 if 200 <= status < 500 and any(marker in body for marker in markers):
@@ -6081,15 +6087,6 @@ def public_comfy_url_ready(
     return public_comfy_http_ready(clean_url, timeout_seconds=timeout_seconds)
 
 
-def localtunnel_assumed_ready(url: str, config: dict | None = None, active: bool = True, min_age_seconds: float = 2.0) -> bool:
-    if not active or not is_localtunnel_url(url):
-        return False
-    config = config or load_config()
-    if main_tunnel_process_age() < min_age_seconds:
-        return False
-    return comfy_http_ready(int(config.get("port", 8188) or 8188), timeout_seconds=1.5)
-
-
 def public_tunnel_probe_error_message(url: str = "") -> str:
     clean_url = str(url or "").strip().rstrip("/")
     suffix = f" ({clean_url})" if clean_url else ""
@@ -6150,14 +6147,8 @@ def wait_for_public_tunnel_url(
             last_detected = detected
             if cached_public_tunnel_ready(detected, force=True):
                 return detected
-            if detected_from_logs and localtunnel_assumed_ready(detected, config=config, active=True, min_age_seconds=6.0):
-                write_portal_log("tunnel.probe.public.warning", "public HTTP probe failed; accepting exact LocalTunnel URL with local Comfy ready", url=detected)
-                return detected
         time.sleep(interval_seconds)
     if last_detected and cached_public_tunnel_ready(last_detected, force=True):
-        return last_detected
-    if last_detected and localtunnel_assumed_ready(last_detected, config=config, active=True, min_age_seconds=6.0):
-        write_portal_log("tunnel.probe.public.warning", "public HTTP probe failed after timeout; accepting exact LocalTunnel URL with local Comfy ready", url=last_detected)
         return last_detected
     return ""
 
@@ -6526,14 +6517,6 @@ def start_tunnel_if_needed() -> str:
                 detected_url
                 and cached_public_tunnel_ready(detected_url, force=True)
             )
-            if (
-                not detected_ready
-                and detected_from_logs
-                and localtunnel_assumed_ready(detected_from_logs, config=config, active=True, min_age_seconds=6.0)
-            ):
-                detected_url = detected_from_logs
-                detected_ready = True
-                write_portal_log("tunnel.probe.public.warning", "public HTTP probe failed; keeping exact LocalTunnel URL with local Comfy ready", url=detected_url)
             if detected_ready:
                 if state.get("last_url") != detected_url:
                     state["last_url"] = detected_url
